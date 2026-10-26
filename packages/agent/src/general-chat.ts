@@ -1,6 +1,7 @@
 import { ChatOpenRouter } from "@langchain/openrouter";
 import { createDeepAgent } from "deepagents";
 import { readOpenRouterApiKey } from "./credentials.js";
+import { chatOnlyPolicy } from "./chat-policy.js";
 
 // A framework graph factory: the development server owns threads and runs.
 // No invocation, host filesystem backend or provider request happens on import.
@@ -12,12 +13,13 @@ export async function createGeneralChatAgent() {
     );
   }
 
-  // Run routes stay disabled until the M1-02 tool/delegation policy qualifies.
+  // Run routes stay disabled until M1-02 service admission is qualified.
   // The pinned harness cannot resolve a profile for ChatOpenRouter instances.
   return createDeepAgent({
     name: "general-chat",
     model: new ChatOpenRouter({ model, apiKey: await readOpenRouterApiKey() }),
     subagents: [],
+    middleware: [chatOnlyPolicy],
     permissions: [
       { operations: ["read", "write"], paths: ["/**"], mode: "deny" },
     ],

@@ -12,18 +12,18 @@ async function main() {
   const token = process.env.HARNESS_SERVICE_TOKEN;
   if (!directory || !token)
     throw new Error("Set HARNESS_DATA_DIR and HARNESS_SERVICE_TOKEN.");
-  // Existing workspace graph factory, built by the root build command.
-  const graphModule = await import(
-    new URL("../../../packages/agent/dist/general-chat.js", import.meta.url)
-      .href
-  );
-  const agent = await graphModule.createGeneralChatAgent();
   const persistence = openPersistence(directory);
   try {
+    const { createServiceAgent } = await import("@harness/agent");
+    const agent = await createServiceAgent((id) => {
+      if (persistence.metadata.getRun(id)?.status === "running")
+        persistence.metadata.finishRun(id, "error");
+    });
     const app = createServiceApp({
       graph: { "general-chat": agent.graph },
       persistence,
       token,
+      connected: true,
     });
     const server = serve({
       fetch: app.fetch,

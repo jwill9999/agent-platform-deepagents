@@ -13,8 +13,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tsconfig.tests.json",
+    "build": "npm run build --workspace=@harness/agent && npm run build --workspace=@harness/contracts && npm run build --workspace=@harness/agent-service && npm run build --workspace=@harness/desktop",
+    "typecheck": "npm run build --workspace=@harness/agent && npm run typecheck --workspaces --if-present && tsc -p tsconfig.tests.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run typecheck && npm run build && npm run format:check",
@@ -25,8 +25,11 @@
     "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.8",
     "@types/node": "24.19.2",
     "@vitest/coverage-v8": "5.0.5",
+    "jsdom": "29.1.1",
     "prettier": "3.9.10",
     "typescript": "5.9.3",
     "vitest": "5.0.5"

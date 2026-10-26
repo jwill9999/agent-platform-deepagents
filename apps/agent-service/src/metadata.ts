@@ -26,6 +26,7 @@ export class MetadataStore implements ThreadSaver {
           thread_id TEXT PRIMARY KEY, metadata TEXT NOT NULL,
           created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS runs (
           run_id TEXT PRIMARY KEY,
           thread_id TEXT NOT NULL REFERENCES threads(thread_id),
@@ -123,6 +124,21 @@ export class MetadataStore implements ThreadSaver {
     )) {
       yield { thread, total: threads.length };
     }
+  }
+
+  getDefaults(): { general: string; coding: string } | null {
+    const row = this.db
+      .prepare("SELECT value FROM settings WHERE name = 'models'")
+      .get() as { value: string } | undefined;
+    return row ? JSON.parse(row.value) : null;
+  }
+
+  setDefaults(value: { general: string; coding: string }): void {
+    this.db
+      .prepare(
+        "INSERT INTO settings VALUES ('models', ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+      )
+      .run(JSON.stringify(value));
   }
 
   /** Called once while holding exclusive service ownership; never dispatches work. */
