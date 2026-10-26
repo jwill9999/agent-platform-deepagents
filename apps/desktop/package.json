@@ -1,0 +1,16 @@
+{
+  "name": "@harness/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "electron .",
+    "smoke": "electron . --scaffold-smoke"
+  },
+  "main": "dist/main.js",
+  "devDependencies": {
+    "electron": "45.0.0"
+  }
+}
