@@ -9,7 +9,13 @@ export async function readOpenRouterApiKey(): Promise<string> {
       break;
     case "keyring": {
       const { AsyncEntry } = await import("@napi-rs/keyring");
-      const entry = new AsyncEntry("agent-platform-deepagents", "openrouter", {
+      // A separate namespace allows isolated local profiles/qualification without
+      // reading or overwriting the normal profile's credential.
+      const service =
+        process.env.HARNESS_KEYRING_SERVICE ?? "agent-platform-deepagents";
+      if (!service.trim())
+        throw new Error("HARNESS_KEYRING_SERVICE must not be empty.");
+      const entry = new AsyncEntry(service, "openrouter", {
         linux: { store: "secret-service" },
       });
       apiKey = await entry.getPassword();
