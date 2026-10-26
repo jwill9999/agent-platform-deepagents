@@ -74,3 +74,19 @@ Dependencies are pinned; compatible Deep Agents peer dependencies must be review
 
 - [Deep Agents TypeScript quickstart](https://docs.langchain.com/oss/javascript/deepagents/quickstart)
 - [Electron security](https://www.electronjs.org/docs/latest/tutorial/security)
+
+## Continuous integration
+
+[GitHub Actions](https://github.com/jwill9999/agent-platform-deepagents/actions) runs `npm ci` and `npm run check` (type checks, builds and formatting) on pushes and pull requests, including staging and main. The job is named `check`, uses a GitHub-hosted Ubuntu runner with Node 24 from `.nvmrc`, read-only repository permissions and pinned action revisions. Each job has a 15-minute timeout; a newer run cancels an older run for the same workflow/event/ref. Push and pull-request checks use separate groups so one cannot cancel the other.
+
+CI requires no provider key and launches no application VM or Electron session. It is a supporting static/build gate, not live OpenRouter, desktop or installer acceptance. The last verified hosted pass before the action update was [commit b9c1fde](https://github.com/jwill9999/agent-platform-deepagents/actions/runs/40342253834). The updated action revisions require a fresh hosted run after publication.
+
+Use task branches and pull requests into `staging` as the development integration baseline; `main` remains the release baseline. Require `check` before integration once branch protection is configured. The workflow file alone does not enable branch protection, change the default branch or merge existing work into staging.
+
+### SonarQube Cloud
+
+The `SonarQube` job analyses our `apps` and `packages` source after `check` succeeds, on staging/main pushes and same-repository pull requests. It uses the repository's `SONAR_TOKEN` secret and [project jwill9999_agent-platform-deepagents](https://sonarcloud.io/dashboard?id=jwill9999_agent-platform-deepagents) in organisation `jwill9999`. The pinned official scanner waits up to five minutes for the quality gate; analysis or gate failure fails the job. Generated output and dependencies are excluded. No fabricated coverage report or coverage exclusions are added to avoid a failing gate.
+
+Fork and Dependabot PRs do not receive this secret-backed analysis; `check` still runs, and a skipped scan is not a Sonar pass. Scan approved contributions through a trusted branch before integration when required. Do not use `pull_request_target` to execute untrusted PR code with secrets. Feature-branch pushes alone do not run Sonar; open a same-repository PR for analysis.
+
+Initial configuration was verified through the public Sonar API: the project exists, but its Sonar main branch is currently `main`, and no analysis pass has been established. Before treating staging as the Sonar baseline, align the project branch settings and ensure CI-based analysis is enabled (disable automatic analysis if enabled). Branch/PR analysis availability depends on the project's Sonar plan. These service settings and a successful hosted scan must be verified before calling the integration operational or requiring its check in branch protection. Static analysis supports, but never replaces, practical acceptance.

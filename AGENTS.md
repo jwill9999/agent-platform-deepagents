@@ -90,3 +90,11 @@ Owner checkpoint: until the owner agrees the system is in place and the testing 
 Current priority: M1-01 has been accepted and closed. Keep repository documentation current at closeout and before publication. Configured OpenRouter connection/live testability is the next task priority; refresh its live prerequisites and claim before implementation. Synthetic checks do not substitute for a configured-agent practical pass. Avoid infrastructure work that does not unblock that path. Use an agreed local credential path, never chat, and agree model/call/spend limits before live calls.
 
 Use the repository's npm lockfile/scripts, feature branches and Conventional Commits. Use the commit-push-pr skill for committing/pushing. Report practical passes, later regression results, implementation, review, packaging and release as distinct states. Do not infer implementation, paid-run or publication authority from a planning document.
+
+## Integration and CI workflow
+
+Use `staging` as the integration baseline and `main` as the release baseline. Work on `jwill9999/` task branches and target staging for normal task PRs; do not push directly to staging/main. Check the actual remote state before branching: this policy does not itself integrate existing work or enable GitHub branch protection. Promote to main only after agreed functional acceptance and owner authorisation.
+
+The CI job `check` installs the lockfile and runs type checks, builds and formatting. Keep it free of provider credentials, live model calls and application VM/Electron launches. Green CI is supporting evidence only and does not waive C1–C4 or practical acceptance. Before publication run `npm run check`; verify hosted CI for the pushed revision and report branch protection separately. Existing commit/push/merge approval boundaries remain in force.
+
+SonarQube Cloud is a separate source-analysis/quality gate. Never bypass a failing gate with fake coverage, blanket coverage exclusions or `continue-on-error`; discuss any mismatch with the practical-before-unit-test policy. The secret-backed job excludes fork/Dependabot PRs, so a skipped scan is not acceptance. Verify the configured Sonar baseline and successful analysis before requiring the job in branch protection.
