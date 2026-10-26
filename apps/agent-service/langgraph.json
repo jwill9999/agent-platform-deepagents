@@ -1,0 +1,12 @@
+{
+  "node_version": "24",
+  "graphs": {
+    "general-chat": "../../packages/agent/dist/general-chat.js:createGeneralChatAgent"
+  },
+  "http": {
+    "disable_runs": true,
+    "cors": {
+      "allow_origins": []
+    }
+  }
+}
