@@ -12,11 +12,11 @@ Implementation sequencing is defined in [milestone one](planning/milestone-1.md)
 
 ## Current delivery state
 
-The checkout is `/Users/letuscode/projects/agent-platform-deepagents`. M1-01 is accepted and closed; implementation through `ef17dc8` is pushed on `jwill9999/m1-01-qualification`. GitHub Issues owns current task status. The original scaffold is `ef40e0f`; its [verification record](scaffold-verification.md) is historical evidence.
+The checkout is `/Users/letuscode/projects/agent-platform-deepagents`. M1-01 is accepted; its code/documentation and PR #10 coverage work are merged into staging (`28a1f61`). GitHub Issues owns live status. The original scaffold verification remains historical evidence.
 
-Present: npm workspaces, strict TypeScript, static Electron shell, independent authenticated service using the experimental LangGraph embedded API, maintained SQLite checkpointing and approved application metadata/restart reconciliation, Deep Agents/OpenRouter factory and backend Keychain binding. Bounded synthetic service/storage/SDK/credential checks and a temporary Lima feasibility probe passed; see [M1-01 qualification](planning/m1-01-qualification.md).
+M1-02 now implements the React/Vite/shadcn Electron client, authenticated independent service, service-owned Keychain setup/defaults, narrow streamed General Chat and durable history. Real OpenRouter reply and fresh-process follow-up passed; supporting recovery/regression evidence and limits are in [M1-02 qualification](planning/m1-02-qualification.md). Implementation and regression tests are committed as `f5037f4` after critique approval and the owner's testing-confidence/publication go-ahead; hosted verification and integration remain separate.
 
-Not yet accepted: connected React/shadcn desktop, real provider setup or agent responses, integrated conversation/run lifecycle, product sandbox, document/coding workflows or installer. Execution routes remain disabled. The temporary VM was removed; feasibility does not establish a shipped sandbox. Hosted CI success is not claimed by the local qualification record.
+Not delivered by this slice: task allowances/queue, Stop/Resume, background continuation/rejoin, notifications, product sandbox, document/coding workflows or installer. The temporary M1-01 VM was removed. Framework feasibility and CI alone do not establish these later outcomes.
 
 ## Agreed requirements
 

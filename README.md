@@ -1,6 +1,6 @@
 # agent-platform-deepagents
 
-Electron and Deep Agents TypeScript development foundation. Product features are not implemented.
+Electron and Deep Agents TypeScript development pilot. M1-02 implements OpenRouter setup and durable General Chat; the owner has approved publication, with hosted CI and integration tracked separately.
 
 ## Product and delivery planning
 
@@ -10,6 +10,7 @@ Electron and Deep Agents TypeScript development foundation. Product features are
 - [Agreed product specification](docs/product-specification.md)
 - [Milestone one implementation plan](docs/planning/milestone-1.md)
 - [Sources, skills and reuse boundaries](docs/planning/source-and-reuse-map.md)
+- [M1-02 connection qualification and limits](docs/planning/m1-02-qualification.md)
 
 These distinguish agreed requirements, planned work and the accepted M1-01 infrastructure qualification. Development tasks are tracked in [GitHub Issues](https://github.com/jwill9999/agent-platform-deepagents/issues) under [milestone one](https://github.com/jwill9999/agent-platform-deepagents/milestone/1), without a Project board. The agent selects unblocked tasks and follows their practical acceptance and C1–C4 checkpoints; repository documents are specifications, not a parallel status backlog.
 
@@ -23,13 +24,13 @@ npm run check
 npm run dev:desktop
 ```
 
-The desktop command opens a minimal shell. The agreed UI direction is React with TypeScript, Vite and shadcn/ui; it is not implemented yet. There is no preload bridge until an agreed feature needs one; the renderer has no Node.js access. Navigation, new windows and permission requests are denied.
+The desktop uses React, TypeScript, Vite and shadcn/ui, following the current Figma file. It connects to an independently started local service. A narrow sandbox preload supplies only the authenticated loopback connection; it never exposes provider credentials or Node.js. Navigation, new windows and permission requests are denied.
 
 ## Workspace
 
-- `apps/desktop`: Electron lifecycle and a static renderer, using a restricted custom protocol.
-- `apps/agent-service`: independent service using the experimental LangGraph embedded API, maintained SQLite checkpointing and application metadata storage; execution remains disabled.
-- `packages/agent`: upstream `createDeepAgent` export and a minimal OpenRouter graph factory; no default model is chosen.
+- `apps/desktop`: Electron lifecycle and the React setup/chat renderer, using a restricted custom protocol.
+- `apps/agent-service`: independent service using the experimental LangGraph embedded API, maintained SQLite checkpointing and application metadata storage and narrow authenticated chat admission.
+- `packages/agent`: Deep Agents/OpenRouter factories, native credential binding and approved chat-only middleware; the user chooses model defaults.
 - `packages/contracts`: reserved shared contract boundary; no product API yet.
 
 ```sh
@@ -40,7 +41,7 @@ npm run build
 npm run format:check
 ```
 
-`dev:*` commands build once before launching. Installers, signing and distribution are not configured. Bounded service persistence/restart checks passed. Desktop/service connection, live chat, MCP connections, coding tools, a product sandbox and integrated background lifecycle remain unqualified. Electron renderer isolation does not provide a sandbox for future agent commands. No credentials are needed for builds/typechecks.
+`dev:*` commands build once before launching. Start the service first, then launch the desktop with the **same** `HARNESS_SERVICE_TOKEN`. The desktop presents setup if no key/defaults are saved. Installers, signing and automatic service supervision are later slices. Current chat has no shell/search/document tools, queue, Stop/Resume or product spending allowance. Closing the desktop is not yet a supported background-run workflow. No credentials are needed for builds/typechecks.
 
 ## Independent service qualification
 
@@ -50,15 +51,19 @@ Before starting, provide:
 
 - `HARNESS_DATA_DIR`: an existing absolute directory owned by the current user, with mode `0700`. No current-directory or home-directory fallback is used. Test storage must follow the project's external-storage policy.
 - `HARNESS_SERVICE_TOKEN`: a private random bearer token of at least 32 URL-safe characters; send it in the `Authorization: Bearer …` header. Never commit or log it.
-- `OPENROUTER_MODEL`: explicit model identifier; no model is chosen automatically.
+- Model defaults are selected from the live OpenRouter catalogue in the UI and saved by the service. `OPENROUTER_MODEL` remains only for the standalone framework-development factory.
 - `HARNESS_KEYRING_SERVICE`: optional backend namespace override for isolated qualification; defaults to `agent-platform-deepagents`. This does not add a second user profile.
-- `HARNESS_CREDENTIAL_SOURCE`: `environment` (development default) reads `OPENROUTER_API_KEY`; `keyring` reads maintained `@napi-rs/keyring` service `agent-platform-deepagents`, account `openrouter`, without environment fallback. No credential-writing UI exists yet.
+- `HARNESS_CREDENTIAL_SOURCE`: `environment` (development default) reads `OPENROUTER_API_KEY`; `keyring` reads maintained `@napi-rs/keyring` service `agent-platform-deepagents`, account `openrouter`, without environment fallback. Use `keyring` for first-run UI saving. Authentication is checked before a replacement is saved; rejected keys are not retained in the form. The saved key is never returned by the service.
 
 Agent-operated practical checks require the owner's testing-mode decision. Nothing in this section authorises a test launch or credential access.
 
-The service owns three SQLite files: `owner.sqlite` holds a native exclusive service-ownership lock; `metadata.sqlite` stores thread/run metadata; `checkpoints.sqlite` belongs to the framework saver. Failed startup closes opened connections. Normal shutdown closes the listener and databases. The implementation marks pending/running records as interrupted on startup; only an explicit resume request can return an interrupted record to pending. Completed and stopped records remain unchanged. **Run lifecycle methods are not yet wired to execution**, so integrated recovery is not established.
+The service owns three SQLite files: `owner.sqlite` holds an exclusive service-ownership lock; `metadata.sqlite` stores settings and thread/run metadata; `checkpoints.sqlite` belongs to the maintained framework saver. Existing chats retain their selected model when defaults change. Startup marks unfinished runs interrupted without dispatching them. Full interruption recovery and Resume remain later work.
 
-Authenticated health, thread creation/search and saved-state/history reads are available in source. Run creation/execution, protocol streaming, state mutation, thread deletion and browser-origin requests are disabled. The M1-02 provider/tool-policy gate remains open; no route can currently invoke the model. Credential access occurs during graph construction, not on import. Tracing is disabled. Actual service Keychain access across restart, SQLite persistence/restart and the admitted/denied routes passed bounded synthetic checks. Live provider use, locked-Keychain handling and packaged compatibility remain unverified.
+Authenticated setup, catalogue/defaults, new-chat/search/history and one thread-stream route are available. Clients cannot override model, context, system input, graph configuration, checkpoints or tools. Other execution/protocol/state-write/delete routes are denied. Only the packaged `harness://app` origin is trusted, and it still requires the bearer token. Same-thread admission stays held until stream outcome and durable finalisation; this is not the later two-task queue.
+
+Credential access belongs to the service and occurs on model dispatch. Tracing and automatic model retries are disabled. Pilot calls have 512 output tokens and a 90-second stream deadline; these are not a monetary spending guarantee. The UI displays the immutable requested model and returned model identity when available. The pinned provider integration omits response model identity on its current streaming path, which the UI discloses explicitly.
+
+Live Electron setup, streamed reply, full owned desktop/service restart and remembered follow-up passed with the approved DeepSeek model. Failure scenarios and subsequent regressions are recorded separately in the [M1-02 evidence](docs/planning/m1-02-qualification.md). This is developer execution, not installer or full background-lifecycle acceptance.
 
 The earlier framework development server remains available as `npm run start:framework-dev --workspace=@harness/agent-service` after a root build. It uses `langgraph.json`, has no product authentication, uses separate development storage and must remain local. Its earlier startup evidence does not validate the new embedded service. Do not use it as the product endpoint.
 
@@ -79,7 +84,7 @@ Dependencies are pinned; compatible Deep Agents peer dependencies must be review
 
 [GitHub Actions](https://github.com/jwill9999/agent-platform-deepagents/actions) runs `npm ci --ignore-scripts`, installs the locked SQLite prebuilt binding explicitly, then runs `npm run check` (source/test type checks, builds and formatting) and `npm run test:coverage`. General dependency installation hooks remain disabled. The `check` job uses a GitHub-hosted Ubuntu runner, Node 24 from `.nvmrc`, read-only repository permissions and pinned action revisions. Jobs have a 15-minute timeout; newer runs cancel older runs for the same workflow/event/ref. Push and PR runs have separate concurrency groups.
 
-Regression checks exercise our real SQLite persistence and HTTP integration with synthetic data, plus mocked Electron, service-startup and credential failure paths. They require no provider key and launch no application VM or Electron session. They supplement the prior M1-01 practical checks; they do not establish live OpenRouter, native Keychain, desktop or installer acceptance.
+Regression checks exercise our real SQLite persistence and HTTP integration with synthetic data, plus mocked Electron, service-startup and credential failure paths. They require no provider key and launch no application VM or Electron session. They supplement the recorded M1-01/M1-02 practical checks; they do not independently establish live OpenRouter, native Keychain, desktop or installer acceptance.
 
 Local tests require `HARNESS_TEST_ROOT` pointing to an existing task-owned collection on the agreed external volume. Set `HARNESS_COVERAGE_DIR` within that collection for generated reports. Run `npm run check` before `npm run test:coverage` because startup checks load the built agent package. CI uses its disposable runner. Vitest enforces per-file minimums of 85% lines, statements and functions, and 80% branches for application source; dependencies and generated builds are outside that coverage scope.
 
