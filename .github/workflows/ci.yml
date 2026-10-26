@@ -17,7 +17,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      # Static/build checks do not need native runtime installation scripts.
+      - run: npm ci --ignore-scripts
       - run: npm run check
   sonar:
     name: SonarQube
