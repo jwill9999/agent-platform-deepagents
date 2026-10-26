@@ -17,9 +17,21 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      # Static/build checks do not need native runtime installation scripts.
+      # Disable general dependency hooks; install only the SQLite binding needed below.
       - run: npm ci --ignore-scripts
+      - name: Install the locked SQLite prebuilt binding for integration tests
+        working-directory: node_modules/better-sqlite3
+        run: node ../prebuild-install/bin.js
       - run: npm run check
+      - name: Regression coverage of application-owned code
+        run: npm run test:coverage
+      - name: Retain the coverage handoff briefly
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: application-coverage
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 1
   sonar:
     name: SonarQube
     needs: check
@@ -32,6 +44,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+      - name: Read coverage from this workflow run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: application-coverage
+          path: coverage
       - name: Verify Sonar token is configured
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
