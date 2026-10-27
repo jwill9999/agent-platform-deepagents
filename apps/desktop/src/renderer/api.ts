@@ -52,6 +52,28 @@ export type Message = {
   content: unknown;
   response_metadata?: { model?: string; model_name?: string };
 };
+export type Task = {
+  id: string;
+  thread_id: string;
+  state:
+    | "queued"
+    | "running"
+    | "awaiting_approval"
+    | "completed"
+    | "failed"
+    | "denied"
+    | "uncertain"
+    | "interrupted";
+  revision: number;
+  allowance: number;
+  confirmed: number;
+  reserved: number;
+  estimate: number;
+  decision_id: string | null;
+  generation_id: string | null;
+  attempt_settled: number;
+  execution_outcome: "success" | "error" | null;
+};
 export function textContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";

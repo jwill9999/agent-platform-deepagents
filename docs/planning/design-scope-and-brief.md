@@ -156,3 +156,25 @@ The [M1-01 closeout record](m1-01-qualification.md#dt-01-design-handoff) links s
 The connected slice adds [checking connection](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=25-357), [Keychain unavailable](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=25-377), [service unavailable](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=25-396), [catalogue loading](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=25-415), [catalogue unavailable](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=25-437), [restored conversation](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=25-459) and [reply failure](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=25-504). Independent critique approved state coverage after correcting inherited annotations. #2 owns the implementation/evidence.
 
 DT-10 qualification update: show the immutable service-owned **Requested model**. Show returned model identity when observable; the pinned OpenRouter streaming integration currently omits it, so disclose that limitation instead of presenting a selected value as provider confirmation. No automatic switching or custom provider adapter. Older starter allowance/Stop/runtime-download controls belong to their later slices and are not simulated in M1-02.
+
+## DT-03 allowances and queue — 27 October 2026
+
+Owner: M1-03 / GitHub #3; requirements P14–P15 and independent-service P24. Nine editable states extend the current Figma file, using its existing Geist/components/tokens:
+
+| State                     | Frame                                                                        |
+| ------------------------- | ---------------------------------------------------------------------------- |
+| Set instruction allowance | [31:541](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=31-541) |
+| Two active, third queued  | [31:597](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=31-597) |
+| Increase required         | [31:653](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=31-653) |
+| Approved, queued again    | [31:709](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=31-709) |
+| Increase denied           | [31:765](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=31-765) |
+| Stale decision            | [31:821](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=31-821) |
+| Charge uncertain          | [31:877](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=31-877) |
+| Charge confirmed          | [31:933](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=31-933) |
+| Pricing unavailable       | [31:989](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=31-989) |
+
+Reusable allowance component: [31:530](https://www.figma.com/design/pCoB36sHdGlhLJoy0xD2SH?node-id=31-530). Independent critique inspected actual frames and the representative screenshot. DT03-01 duplicate Send controls, DT03-02 available allowance/uncertain-charge distinction and DT03-03 accounting versus execution recovery were corrected and rechecked. Design-gate verdict: **passed** before connected UI implementation; subsequent Electron readback and compact-layout checks passed within the [bounded practical qualification](milestone-1.md#m1-03-practical-qualification--27-october-2026). Live service queueing and synthetic window queue-state evidence are distinguished there.
+
+The designs distinguish total allowance, confirmed charges, held reservation and available funds. There is one Send action. Approval rejoins FIFO without another task identity; accounting refresh does not resume interrupted work. Reservations are estimates, not guaranteed billing caps. Framework cross-reference: the [M1-03 reuse/accounting review](milestone-1.md#m1-03-reuse-review-and-proposed-implementation-boundary), current Deep Agents call-limit and tool-approval docs, and ecosystem/core/memory/orchestration skills. No custom agent loop or additional product client is implied.
+
+Compact screenshot evidence is indexed in the existing external M1-03 collection as `allowance-design.png`; no new runtime, VM or model call was used for design review. Later Stop/Resume/background states remain their assigned task/design triggers.

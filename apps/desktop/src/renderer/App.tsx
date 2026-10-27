@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
+import { TaskPanel, unfinished } from "./TaskPanel.js";
 import { Button } from "./components/ui/button.js";
 import {
   connect,
@@ -9,6 +10,7 @@ import {
   type Model,
   type Chat,
   type Message,
+  type Task,
 } from "./api.js";
 
 export function App() {
@@ -30,6 +32,46 @@ export function App() {
   const [draft, setDraft] = useState("");
   const [partial, setPartial] = useState("");
   const [actualModel, setActualModel] = useState("");
+
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [allowance, setAllowance] = useState("");
+  const selectedChat = useRef<string | undefined>(undefined);
+  const historyVersion = useRef(0);
+  const streaming = useRef(new Set<string>());
+  const submission = useRef<
+    | {
+        id: string;
+        threadId: string;
+        instruction: string;
+        allowanceUsd: string;
+      }
+    | undefined
+  >(undefined);
+  const currentTask = tasks.findLast((t) => t.thread_id === chat?.thread_id);
+  const blocked = Boolean(currentTask && unfinished(currentTask));
+  async function refreshTasks() {
+    if (api) setTasks(await api.request<Task[]>("/tasks"));
+  }
+  useEffect(() => {
+    if (!api) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const list = await api!.request<Task[]>("/tasks");
+        if (!cancelled) setTasks(list);
+      } catch {
+        /* keep last known state */
+      } finally {
+        if (!cancelled) timer = setTimeout(() => void poll(), 1000);
+      }
+    }
+    void poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [api]);
 
   async function refreshChats(connection: Api) {
     const items = await connection.client.threads.search({ limit: 100 });
@@ -114,11 +156,23 @@ export function App() {
     }
   }
   async function openChat(item: Chat) {
+    selectedChat.current = item.thread_id;
+    const version = ++historyVersion.current;
+    setChat(item);
+    setMessages([]);
+    setPartial("");
+    setDraft("");
+    setActualModel("");
     setBusy(true);
     setError("");
     try {
       const state = await api!.client.threads.getState(item.thread_id);
       const saved = (state.values as { messages?: Message[] }).messages ?? [];
+      if (
+        selectedChat.current !== item.thread_id ||
+        historyVersion.current !== version
+      )
+        return;
       setChat(item);
       setMessages(saved);
       setPartial("");
@@ -132,58 +186,101 @@ export function App() {
       setBusy(false);
     }
   }
-  async function send(event: React.FormEvent) {
-    event.preventDefault();
-    if (!draft.trim() || busy) return;
-    setBusy(true);
-    setError("");
-    setPartial("");
-    setActualModel("");
-    let current = chat;
+  async function runTask(task: Task) {
+    if (!api || streaming.current.has(task.id)) return;
+    streaming.current.add(task.id);
     try {
-      current ??= await api!.request<Chat>("/threads", "POST", {});
-      setChat(current);
-      const content = draft.trim();
-      setDraft("");
-      setMessages((old) => [...old, { type: "human", content }]);
-      for await (const part of api!.client.runs.stream(
-        current.thread_id,
+      for await (const part of api.client.runs.stream(
+        task.thread_id,
         "general-chat",
-        {
-          input: { messages: [{ type: "human", content }] },
-          streamMode: ["messages", "values"],
-        },
+        { metadata: { task_id: task.id }, streamMode: ["messages", "values"] },
       )) {
-        if (part.event === "error")
-          throw new Error(
-            "The model could not complete this reply. No automatic resend or model switch was made.",
-          );
+        if (part.event === "error") throw new Error("Reply failed");
+        if (selectedChat.current !== task.thread_id) continue;
         if (part.event === "messages/partial") {
+          historyVersion.current++;
           const message = (part.data as unknown as [Message])[0];
           setPartial(textContent(message.content));
           if (effectiveModel(message)) setActualModel(effectiveModel(message));
         }
         if (part.event === "values") {
+          historyVersion.current++;
           setMessages((part.data as { messages?: Message[] }).messages ?? []);
           setPartial("");
         }
       }
-      const state = await api!.client.threads.getState(current.thread_id);
-      const saved = (state.values as { messages?: Message[] }).messages ?? [];
-      setMessages(saved);
-      setActualModel(effectiveModel(saved.findLast((m) => m.type === "ai")));
     } catch {
-      setError(
-        "Reply failed or the connection was interrupted. Check Connection & models before sending another message. No automatic resend or model switch.",
-      );
+      // Durable task state distinguishes approval waiting, uncertainty and failure.
     } finally {
-      setPartial("");
-      setBusy(false);
+      streaming.current.delete(task.id);
       try {
-        await refreshChats(api!);
+        await refreshTasks();
+        await refreshChats(api);
+        if (selectedChat.current === task.thread_id) {
+          const version = ++historyVersion.current;
+          const state = await api.client.threads.getState(task.thread_id);
+          if (
+            selectedChat.current === task.thread_id &&
+            historyVersion.current === version
+          ) {
+            const saved =
+              (state.values as { messages?: Message[] }).messages ?? [];
+            setMessages(saved);
+            setPartial("");
+            setActualModel(
+              effectiveModel(saved.findLast((m) => m.type === "ai")),
+            );
+          }
+        }
       } catch {
-        /* preserve current chat */
+        if (selectedChat.current === task.thread_id)
+          setError(
+            "Could not refresh task state. No automatic resend was made.",
+          );
       }
+    }
+  }
+  async function send(event: React.FormEvent) {
+    event.preventDefault();
+    if (!draft.trim() || busy || blocked || !allowance) return;
+    setBusy(true);
+    setError("");
+    setPartial("");
+    setActualModel("");
+    try {
+      const current =
+        chat ?? (await api!.request<Chat>("/threads", "POST", {}));
+      selectedChat.current = current.thread_id;
+      setChat(current);
+      const content = draft.trim();
+      const previous = submission.current;
+      const request =
+        previous &&
+        previous.threadId === current.thread_id &&
+        previous.instruction === content &&
+        previous.allowanceUsd === allowance
+          ? previous
+          : {
+              id: crypto.randomUUID(),
+              threadId: current.thread_id,
+              instruction: content,
+              allowanceUsd: allowance,
+            };
+      submission.current = request;
+      const task = await api!.request<Task>("/tasks", "POST", request);
+      setDraft("");
+      submission.current = undefined;
+      setTasks((previous) => [
+        ...previous.filter((t) => t.id !== task.id),
+        task,
+      ]);
+      if (task.state === "queued") void runTask(task);
+      await refreshTasks();
+      await refreshChats(api!);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
   const label = (id: string) => models.find((m) => m.id === id)?.name ?? id;
@@ -381,6 +478,8 @@ export function App() {
               variant="outline"
               disabled={busy}
               onClick={() => {
+                selectedChat.current = undefined;
+                historyVersion.current++;
                 setChat(undefined);
                 setMessages([]);
                 setDraft("");
@@ -391,6 +490,10 @@ export function App() {
             >
               New chat
             </Button>
+            <p className="task-capacity" aria-live="polite">
+              {tasks.filter((t) => t.state === "running").length} active ·{" "}
+              {tasks.filter((t) => t.state === "queued").length} queued
+            </p>
             <small>RECENT CHATS</small>
             <nav aria-label="Recent chats">
               {chats.map((item) => (
@@ -403,7 +506,11 @@ export function App() {
                   onClick={() => void openChat(item)}
                 >
                   {item.metadata.title}
-                  <span>Saved on this Mac</span>
+                  <span>
+                    {tasks
+                      .findLast((t) => t.thread_id === item.thread_id)
+                      ?.state.replaceAll("_", " ") ?? "Saved on this Mac"}
+                  </span>
                 </button>
               ))}
             </nav>
@@ -427,7 +534,7 @@ export function App() {
             <div className="conversation-head">
               <h1>General Chat</h1>
               <span aria-live="polite">
-                {busy
+                {currentTask?.state === "running"
                   ? "Replying…"
                   : chat
                     ? "Saved on this Mac"
@@ -468,13 +575,40 @@ export function App() {
                 {error}
               </p>
             )}
+            {currentTask && api && (
+              <TaskPanel
+                key={currentTask.id}
+                task={currentTask}
+                api={api}
+                refresh={refreshTasks}
+                start={(task) => void runTask(task)}
+              />
+            )}
             <form className="composer" onSubmit={send}>
+              <label htmlFor="task-allowance">
+                Allowance for this instruction (USD)
+              </label>
+              <input
+                id="task-allowance"
+                type="number"
+                min="0"
+                step="any"
+                required
+                value={allowance}
+                onChange={(e) => setAllowance(e.target.value)}
+                disabled={busy || blocked}
+                aria-describedby="allowance-help"
+              />
+              <p id="allowance-help" className="footnote">
+                Choose an amount. Retries share this task's allowance; new
+                instructions have their own allowance.
+              </p>
               <textarea
                 aria-label="Message"
                 placeholder="Ask a question…"
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                disabled={busy}
+                disabled={busy || blocked}
                 maxLength={8000}
               />
               <div>
@@ -488,8 +622,11 @@ export function App() {
                     </small>
                   )}
                 </span>
-                <Button type="submit" disabled={busy || !draft.trim()}>
-                  {busy ? "Replying…" : "Send"}
+                <Button
+                  type="submit"
+                  disabled={busy || blocked || !draft.trim() || !allowance}
+                >
+                  {busy ? "Submitting…" : "Send with allowance"}
                 </Button>
               </div>
             </form>

@@ -1,6 +1,6 @@
 import { ChatOpenRouter } from "@langchain/openrouter";
 import { createDeepAgent } from "deepagents";
-import { createMiddleware } from "langchain";
+import { createMiddleware, modelCallLimitMiddleware } from "langchain";
 import { z } from "zod";
 import { readOpenRouterApiKey } from "./credentials.js";
 import { chatOnlyPolicy } from "./chat-policy.js";
@@ -9,6 +9,18 @@ import { chatOnlyPolicy } from "./chat-policy.js";
 const contextSchema = z.object({
   model: z.string().min(1),
   admissionId: z.string(),
+  provider: z
+    .object({
+      only: z.array(z.string()).min(1),
+      allow_fallbacks: z.literal(false),
+      require_parameters: z.literal(true),
+      max_price: z.object({
+        prompt: z.string(),
+        completion: z.string(),
+        request: z.string(),
+      }),
+    })
+    .optional(),
 });
 export async function createServiceAgent(onFailure: (id: string) => void) {
   const selection = createMiddleware({
@@ -22,7 +34,9 @@ export async function createServiceAgent(onFailure: (id: string) => void) {
           maxRetries: 0,
           maxTokens: 512,
           modelKwargs: { reasoning: { enabled: false } },
-          provider: { allow_fallbacks: false },
+          provider: request.runtime.context.provider ?? {
+            allow_fallbacks: false,
+          },
         });
         return await handler({ ...request, model, tools: [] });
       } catch {
@@ -43,7 +57,7 @@ export async function createServiceAgent(onFailure: (id: string) => void) {
       model: "unconfigured",
       apiKey: "unconfigured",
     }),
-    middleware: [selection, chatOnlyPolicy],
+    middleware: [modelCallLimitMiddleware(), selection, chatOnlyPolicy],
     subagents: [],
     permissions: [
       { operations: ["read", "write"], paths: ["/**"], mode: "deny" },

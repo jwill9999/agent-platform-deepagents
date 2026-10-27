@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { closeSync, lstatSync, openSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { MetadataStore } from "./metadata.js";
+import { TaskLedger } from "./task-ledger.js";
 
 /** The caller provides an existing private data directory; never fall back to cwd. */
 export function openPersistence(directory: string) {
@@ -53,12 +54,14 @@ export function openPersistence(directory: string) {
     metadataDb.pragma("journal_mode = WAL");
     metadataDb.pragma("synchronous = FULL");
     const metadata = new MetadataStore(metadataDb);
+    const tasks = new TaskLedger(metadataDb);
     const checkpointDb = open("checkpoints.sqlite");
     checkpointDb.pragma("journal_mode = WAL");
     checkpointDb.pragma("synchronous = FULL");
     const checkpointer = new SqliteSaver(checkpointDb);
     metadata.reconcileInterruptedRuns();
-    return { metadata, checkpointer, close };
+    tasks.interruptOnRestart();
+    return { metadata, tasks, checkpointer, close };
   } catch (error) {
     close();
     throw error;
