@@ -27,6 +27,10 @@ const task: Task = {
   generation_id: null,
   attempt_settled: 0,
   execution_outcome: null,
+  attempt_id: null,
+  partial_text: "",
+  provider_attempts: 0,
+  retry_waiting: 0,
 };
 function mount(t = task) {
   const request = vi.fn(),
@@ -105,3 +109,47 @@ test.each([
     expect(dollars(0)).toBe("0.00");
   },
 );
+
+test("Stop carries current attempt/revision; request failure refreshes state without claiming termination", async () => {
+  const { request, refresh } = mount({
+    ...task,
+    state: "running",
+    attempt_id: "run",
+    provider_attempts: 1,
+    retry_waiting: 1,
+  });
+  request.mockRejectedValue(new Error("Task changed"));
+  fireEvent.click(screen.getByRole("button", { name: "Stop task" }));
+  await waitFor(() => expect(refresh).toHaveBeenCalled());
+  expect(request).toHaveBeenCalledWith("/tasks/task/stop", "POST", {
+    attemptId: "run",
+    revision: 1,
+  });
+  expect(screen.getByRole("alert").textContent).toContain("Task changed");
+});
+test("Stopping is not terminal; stopped billing remains distinct", () => {
+  mount({ ...task, state: "stopping" });
+  expect(
+    screen.getByRole("button", { name: "Stopping…" }).hasAttribute("disabled"),
+  ).toBe(true);
+  expect(unfinished({ ...task, state: "stopping" })).toBe(true);
+  cleanup();
+  mount({ ...task, state: "stopped", provider_attempts: 1 });
+  expect(screen.getByText(/Local execution has ended/)).toBeTruthy();
+  expect(unfinished({ ...task, state: "stopped" })).toBe(false);
+});
+test("successful Stop refreshes; failed refresh remains explicitly unconfirmed", async () => {
+  const { request, refresh } = mount({
+    ...task,
+    state: "running",
+    attempt_id: "run",
+  });
+  request.mockResolvedValue({ state: "stopping" });
+  refresh.mockRejectedValue(new Error("offline"));
+  fireEvent.click(screen.getByRole("button", { name: "Stop task" }));
+  await waitFor(() =>
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Could not confirm Stop",
+    ),
+  );
+});

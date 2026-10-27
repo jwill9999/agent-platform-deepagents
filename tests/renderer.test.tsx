@@ -301,3 +301,41 @@ test("selected task state drives approval controls without sending another instr
   ).toBe(true);
   expect(mock.stream).not.toHaveBeenCalled();
 });
+
+test("a newer task does not hide a retained incomplete reply from the same conversation", async () => {
+  initialDefaults = defaults;
+  const original = mock.request.getMockImplementation()!;
+  mock.request.mockImplementation(
+    async (path: string, method: string, body: unknown) =>
+      path === "/tasks"
+        ? [
+            {
+              id: "old",
+              thread_id: chat.thread_id,
+              state: "stopped",
+              partial_text: "Earlier incomplete reply",
+              execution_outcome: "error",
+              allowance: 100,
+              reserved: 10,
+              confirmed: 0,
+            },
+            {
+              id: "new",
+              thread_id: chat.thread_id,
+              state: "awaiting_approval",
+              partial_text: "",
+              allowance: 100,
+              confirmed: 0,
+              reserved: 0,
+              estimate: 200,
+            },
+          ]
+        : original(path, method, body),
+  );
+  render(<App />);
+  await screen.findByRole("button", { name: /Saved discussion/ });
+  fireEvent.click(screen.getByRole("button", { name: /Saved discussion/ }));
+  expect(await screen.findByText("Earlier incomplete reply")).toBeTruthy();
+  expect(screen.getByText("General Chat · Incomplete reply")).toBeTruthy();
+  expect(mock.stream).not.toHaveBeenCalled();
+});

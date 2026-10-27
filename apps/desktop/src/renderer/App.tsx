@@ -491,8 +491,11 @@ export function App() {
               New chat
             </Button>
             <p className="task-capacity" aria-live="polite">
-              {tasks.filter((t) => t.state === "running").length} active ·{" "}
-              {tasks.filter((t) => t.state === "queued").length} queued
+              {
+                tasks.filter((t) => ["running", "stopping"].includes(t.state))
+                  .length
+              }{" "}
+              active · {tasks.filter((t) => t.state === "queued").length} queued
             </p>
             <small>RECENT CHATS</small>
             <nav aria-label="Recent chats">
@@ -536,9 +539,13 @@ export function App() {
               <span aria-live="polite">
                 {currentTask?.state === "running"
                   ? "Replying…"
-                  : chat
-                    ? "Saved on this Mac"
-                    : "A fresh conversation"}
+                  : currentTask?.state === "stopping"
+                    ? "Stopping requested"
+                    : currentTask?.state === "stopped"
+                      ? "Stopped"
+                      : chat
+                        ? "Saved on this Mac"
+                        : "A fresh conversation"}
               </span>
             </div>
             <div className="messages" role="log" aria-label="Conversation">
@@ -561,6 +568,26 @@ export function App() {
                   >
                     <small>{m.type === "human" ? "You" : "General Chat"}</small>
                     <p>{textContent(m.content)}</p>
+                  </article>
+                ))}
+              {tasks
+                .filter(
+                  (t) =>
+                    t.thread_id === chat?.thread_id &&
+                    t.partial_text &&
+                    (t.state === "stopped" ||
+                      t.execution_outcome === "error" ||
+                      t.state === "interrupted") &&
+                    !(t.id === currentTask?.id && partial),
+                )
+                .map((t) => (
+                  <article className="assistant" key={`incomplete-${t.id}`}>
+                    <small>General Chat · Incomplete reply</small>
+                    <p>{t.partial_text}</p>
+                    <p className="footnote">
+                      Retained from an earlier attempt for reference; not
+                      replayed automatically.
+                    </p>
                   </article>
                 ))}
               {partial && (
