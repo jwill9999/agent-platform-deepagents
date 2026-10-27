@@ -2,14 +2,47 @@ import { Hono } from "hono";
 import type { MetadataStore } from "./metadata.js";
 import type { TaskLedger } from "./task-ledger.js";
 import { generationCost, usdToNanos } from "./accounting.js";
+import type { ExecutionControl } from "./execution-control.js";
 
 function object(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-export function taskRoutes(tasks: TaskLedger, metadata: MetadataStore) {
+export function taskRoutes(
+  tasks: TaskLedger,
+  metadata: MetadataStore,
+  execution?: ExecutionControl,
+) {
   const app = new Hono();
   app.get("/tasks", (c) => c.json(tasks.list()));
+  app.post("/tasks/:id/stop", async (c) => {
+    const body: unknown = await c.req.json();
+    if (
+      !object(body) ||
+      Object.keys(body).some((k) => !["attemptId", "revision"].includes(k)) ||
+      typeof body.attemptId !== "string" ||
+      !Number.isSafeInteger(body.revision)
+    )
+      return c.json(
+        { error: "Supply current execution identity and revision" },
+        400,
+      );
+    try {
+      if (!execution) throw new Error("Execution unavailable");
+      return c.json(
+        execution.stop(
+          c.req.param("id"),
+          body.attemptId,
+          body.revision as number,
+        ),
+      );
+    } catch {
+      return c.json(
+        { error: "Task changed or already finished. Refresh its status." },
+        409,
+      );
+    }
+  });
   app.post("/tasks", async (c) => {
     const body: unknown = await c.req.json();
     if (
@@ -90,7 +123,7 @@ export function taskRoutes(tasks: TaskLedger, metadata: MetadataStore) {
         c.req.param("id"),
         body.revision as number,
       );
-      if (!["uncertain", "interrupted"].includes(task.state))
+      if (!["uncertain", "interrupted", "stopped"].includes(task.state))
         return c.json({ error: "Accounting is not ready" }, 409);
       const cost = await generationCost(task.generation_id!);
       return c.json(
