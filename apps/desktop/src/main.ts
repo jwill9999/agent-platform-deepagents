@@ -1,5 +1,6 @@
 import { app, BrowserWindow, protocol, session, ipcMain } from "electron";
 import { fileURLToPath } from "node:url";
+import { registerNotifications } from "./notifications.js";
 import { readFile } from "node:fs/promises";
 
 const smoke = process.argv.includes("--scaffold-smoke");
@@ -51,6 +52,7 @@ async function createWindow(): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
+  registerNotifications();
   session.defaultSession.setPermissionRequestHandler(
     (_contents, _permission, callback) => callback(false),
   );

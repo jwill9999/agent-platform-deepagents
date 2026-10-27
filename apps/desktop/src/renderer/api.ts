@@ -2,7 +2,14 @@ import { Client } from "@langchain/langgraph-sdk";
 export type Connection = { url: string; token: string };
 declare global {
   interface Window {
-    harness: { connection(): Promise<Connection> };
+    harness: {
+      connection(): Promise<Connection>;
+      cancelNotifications?(): Promise<void>;
+      notify?(session: string): Promise<string>;
+      testNotification?(): Promise<string>;
+      onActivity?(callback: (id: number | null) => void): () => void;
+      onNotificationStatus?(callback: (status: string) => void): () => void;
+    };
   }
 }
 export async function connect() {

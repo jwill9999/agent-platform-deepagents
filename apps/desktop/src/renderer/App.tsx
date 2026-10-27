@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
+import { ActivityHub, type Activity } from "./ActivityHub.js";
 import { TaskPanel, unfinished } from "./TaskPanel.js";
 import { Button } from "./components/ui/button.js";
 import {
@@ -15,6 +16,8 @@ import {
 
 export function App() {
   const [api, setApi] = useState<Api>();
+  const [view, setView] = useState<"chat" | "inbox" | "preferences">("chat");
+  const [unread, setUnread] = useState(0);
   const [setup, setSetup] = useState<Setup>();
   const [screen, setScreen] = useState<"connection" | "models" | "chat">(
     "connection",
@@ -85,6 +88,13 @@ export function App() {
       const state = await connection.request<Setup>("/setup");
       setSetup(state);
       setApi(connection);
+      void connection
+        .request<{ theme: string }>("/activity/preferences")
+        .then((p) => {
+          if (["system", "light", "dark"].includes(p.theme))
+            document.documentElement.dataset.theme = p.theme;
+        })
+        .catch(() => {});
       setGeneral(state.defaults?.general ?? "");
       setCoding(state.defaults?.coding ?? "");
       setSame(
@@ -156,6 +166,7 @@ export function App() {
     }
   }
   async function openChat(item: Chat) {
+    setView("chat");
     selectedChat.current = item.thread_id;
     const version = ++historyVersion.current;
     setChat(item);
@@ -185,6 +196,16 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  }
+  async function openActivity(event: Activity | null) {
+    if (!event) {
+      setView("inbox");
+      return;
+    }
+    const current = await api!.request<Activity>(`/activity/${event.id}`);
+    const thread = await api!.client.threads.get(current.thread_id);
+    await refreshTasks();
+    await openChat(thread as unknown as Chat);
   }
   async function runTask(task: Task) {
     if (!api || streaming.current.has(task.id)) return;
@@ -472,12 +493,33 @@ export function App() {
         <main className="chat-layout">
           <aside className="sidebar">
             <small>WORKSPACE</small>
-            <strong>General Chat</strong>
+            <Button
+              variant="ghost"
+              aria-pressed={view === "chat"}
+              onClick={() => setView("chat")}
+            >
+              General Chat
+            </Button>
+            <Button
+              variant="ghost"
+              aria-pressed={view === "inbox"}
+              onClick={() => setView("inbox")}
+            >
+              Activity inbox ({unread} unread)
+            </Button>
+            <Button
+              variant="ghost"
+              aria-pressed={view === "preferences"}
+              onClick={() => setView("preferences")}
+            >
+              Preferences
+            </Button>
             <span className="muted">Coding · coming later</span>
             <Button
               variant="outline"
               disabled={busy}
               onClick={() => {
+                setView("chat");
                 selectedChat.current = undefined;
                 historyVersion.current++;
                 setChat(undefined);
@@ -533,7 +575,15 @@ export function App() {
               On this Mac
             </p>
           </aside>
-          <section className="conversation">
+          {api && (
+            <ActivityHub
+              api={api}
+              view={view}
+              onOpen={openActivity}
+              onUnread={setUnread}
+            />
+          )}
+          <section className="conversation" hidden={view !== "chat"}>
             <div className="conversation-head">
               <h1>General Chat</h1>
               <span aria-live="polite">
