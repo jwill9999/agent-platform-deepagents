@@ -1,0 +1,403 @@
+import type Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
+
+export type TaskState =
+  | "queued"
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "denied"
+  | "uncertain"
+  | "interrupted";
+
+/** Money is integer nano-USD. Provider decimal conversion belongs at the boundary. */
+export type TaskRecord = {
+  id: string;
+  thread_id: string;
+  instruction: string;
+  state: TaskState;
+  revision: number;
+  allowance: number;
+  initial_allowance: number;
+  reserved: number;
+  confirmed: number;
+  estimate: number;
+  queue_order: number;
+  queued_at: number;
+  decision_id: string | null;
+  attempt_id: string | null;
+  attempt_settled: number;
+  generation_id: string | null;
+  execution_outcome: "success" | "error" | null;
+  lookup_after: number;
+};
+
+function money(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new Error("Invalid monetary amount");
+}
+
+/** Product policy only; never stores or replaces graph checkpoints. */
+export class TaskLedger {
+  constructor(private readonly db: Database.Database) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS task_policy_schema (
+        version INTEGER PRIMARY KEY CHECK(version = 1)
+      );
+      INSERT OR IGNORE INTO task_policy_schema VALUES (1);
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(thread_id),
+        instruction TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN (
+          'queued','running','awaiting_approval','completed','failed',
+          'denied','uncertain','interrupted'
+        )),
+        revision INTEGER NOT NULL DEFAULT 0,
+        allowance INTEGER NOT NULL CHECK(allowance >= 0),
+        initial_allowance INTEGER NOT NULL CHECK(initial_allowance >= 0),
+        reserved INTEGER NOT NULL DEFAULT 0 CHECK(reserved >= 0),
+        confirmed INTEGER NOT NULL DEFAULT 0 CHECK(confirmed >= 0),
+        estimate INTEGER NOT NULL DEFAULT 0 CHECK(estimate >= 0),
+        queue_order INTEGER NOT NULL,
+        queued_at INTEGER NOT NULL,
+        decision_id TEXT,
+        attempt_id TEXT,
+        attempt_settled INTEGER NOT NULL DEFAULT 0 CHECK(attempt_settled IN (0,1)),
+        generation_id TEXT,
+        execution_outcome TEXT CHECK(execution_outcome IN ('success','error')),
+        lookup_after INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS one_open_task_per_thread ON tasks(thread_id)
+        WHERE state IN ('queued','running','awaiting_approval','uncertain','interrupted');
+      CREATE TABLE IF NOT EXISTS allowance_decisions (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id),
+        revision INTEGER NOT NULL,
+        approved INTEGER NOT NULL,
+        allowance INTEGER NOT NULL
+      );
+    `);
+  }
+
+  get(id: string): TaskRecord {
+    const row = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+    if (!row) throw new Error("Task not found");
+    return row as TaskRecord;
+  }
+
+  list(): TaskRecord[] {
+    return this.db
+      .prepare("SELECT * FROM tasks ORDER BY queue_order, id")
+      .all() as TaskRecord[];
+  }
+
+  private nextOrder(): number {
+    return (
+      this.db
+        .prepare("SELECT COALESCE(MAX(queue_order),0)+1 AS value FROM tasks")
+        .get() as { value: number }
+    ).value;
+  }
+
+  submit(
+    id: string,
+    threadId: string,
+    instruction: string,
+    allowance: number,
+  ): TaskRecord {
+    money(allowance);
+    if (
+      !/^[a-zA-Z0-9_-]{16,128}$/.test(id) ||
+      !instruction.trim() ||
+      instruction.length > 8000
+    )
+      throw new Error("Invalid task submission");
+    return this.db
+      .transaction(() => {
+        const existing = this.db
+          .prepare("SELECT * FROM tasks WHERE id = ?")
+          .get(id) as TaskRecord | undefined;
+        if (existing) {
+          if (
+            existing.thread_id !== threadId ||
+            existing.instruction !== instruction ||
+            existing.initial_allowance !== allowance
+          )
+            throw new Error(
+              "Submission identity conflicts with an existing task",
+            );
+          return existing;
+        }
+        this.db
+          .prepare(
+            "INSERT INTO tasks (id,thread_id,instruction,state,allowance,initial_allowance,queue_order,queued_at) VALUES (?,?,?,'queued',?,?,?,?)",
+          )
+          .run(
+            id,
+            threadId,
+            instruction,
+            allowance,
+            allowance,
+            this.nextOrder(),
+            Date.now(),
+          );
+        return this.get(id);
+      })
+      .immediate();
+  }
+
+  /** Quote is supplied by qualified server-side accounting, never by a client. */
+  admit(id: string, revision: number, estimate: number): TaskRecord | null {
+    money(estimate);
+    return this.db
+      .transaction(() => {
+        const task = this.get(id);
+        if (task.revision !== revision || task.state !== "queued")
+          throw new Error("Stale task admission");
+        const first = this.db
+          .prepare(
+            "SELECT id FROM tasks WHERE state = 'queued' ORDER BY queue_order,id LIMIT 1",
+          )
+          .get() as { id: string } | undefined;
+        const active = (
+          this.db
+            .prepare(
+              "SELECT COUNT(*) AS value FROM tasks WHERE state = 'running'",
+            )
+            .get() as { value: number }
+        ).value;
+        if (first?.id !== id || active >= 2) return null;
+        if (task.reserved !== 0) throw new Error("Unreconciled reservation");
+        const waiting = estimate > task.allowance - task.confirmed;
+        this.db
+          .prepare(
+            "UPDATE tasks SET state=?, estimate=?, reserved=?, decision_id=?, attempt_id=?, attempt_settled=0, revision=revision+1 WHERE id=?",
+          )
+          .run(
+            waiting ? "awaiting_approval" : "running",
+            estimate,
+            waiting ? 0 : estimate,
+            waiting ? randomUUID() : null,
+            waiting ? null : randomUUID(),
+            id,
+          );
+        return this.get(id);
+      })
+      .immediate();
+  }
+
+  decide(
+    id: string,
+    decisionId: string,
+    revision: number,
+    approved: boolean,
+    allowance: number,
+  ): TaskRecord {
+    money(allowance);
+    return this.db
+      .transaction(() => {
+        const prior = this.db
+          .prepare("SELECT * FROM allowance_decisions WHERE id=?")
+          .get(decisionId) as
+          | {
+              task_id: string;
+              revision: number;
+              approved: number;
+              allowance: number;
+            }
+          | undefined;
+        if (prior) {
+          if (
+            prior.task_id !== id ||
+            prior.revision !== revision ||
+            prior.approved !== Number(approved) ||
+            prior.allowance !== allowance
+          )
+            throw new Error("Conflicting repeated decision");
+          return this.get(id);
+        }
+        const task = this.get(id);
+        if (
+          task.state !== "awaiting_approval" ||
+          task.revision !== revision ||
+          task.decision_id !== decisionId
+        )
+          throw new Error("Stale allowance decision");
+        if (
+          approved &&
+          (allowance <= task.allowance ||
+            allowance - task.confirmed < task.estimate)
+        )
+          throw new Error("Increase does not cover the reservation");
+        if (!approved && allowance !== task.allowance)
+          throw new Error("Denial cannot change the allowance");
+        this.db
+          .prepare("INSERT INTO allowance_decisions VALUES (?,?,?,?,?)")
+          .run(decisionId, id, revision, Number(approved), allowance);
+        this.db
+          .prepare(
+            "UPDATE tasks SET state=?,allowance=?,queue_order=?,queued_at=?,decision_id=NULL,revision=revision+1 WHERE id=?",
+          )
+          .run(
+            approved ? "queued" : "denied",
+            allowance,
+            this.nextOrder(),
+            Date.now(),
+            id,
+          );
+        return this.get(id);
+      })
+      .immediate();
+  }
+
+  /** Missing cost retains the full reservation, even after a failed stream. */
+  settle(
+    id: string,
+    attemptId: string,
+    revision: number,
+    cost: number | null,
+    succeeded: boolean,
+  ): TaskRecord {
+    if (cost !== null) money(cost);
+    return this.db
+      .transaction(() => {
+        const task = this.get(id);
+        if (
+          task.state !== "running" ||
+          task.revision !== revision ||
+          task.attempt_id !== attemptId ||
+          task.attempt_settled
+        )
+          throw new Error("Stale task settlement");
+        const confirmed = task.confirmed + (cost ?? 0);
+        money(confirmed);
+        this.db
+          .prepare(
+            "UPDATE tasks SET state=?,confirmed=?,reserved=?,attempt_settled=?,execution_outcome=?,revision=revision+1 WHERE id=?",
+          )
+          .run(
+            cost === null ? "uncertain" : succeeded ? "completed" : "failed",
+            confirmed,
+            cost === null ? task.reserved : 0,
+            Number(cost !== null),
+            succeeded ? "success" : "error",
+            id,
+          );
+        return this.get(id);
+      })
+      .immediate();
+  }
+
+  /** Late accounting only: records a known outcome but never replays execution. */
+  reconcile(
+    id: string,
+    attemptId: string,
+    revision: number,
+    cost: number,
+  ): TaskRecord {
+    money(cost);
+    return this.db
+      .transaction(() => {
+        const task = this.get(id);
+        if (
+          !["uncertain", "interrupted"].includes(task.state) ||
+          task.revision !== revision ||
+          !task.attempt_id ||
+          task.attempt_id !== attemptId ||
+          task.attempt_settled
+        )
+          throw new Error("Stale accounting reconciliation");
+        const confirmed = task.confirmed + cost;
+        money(confirmed);
+        this.db
+          .prepare(
+            "UPDATE tasks SET state=?,confirmed=?,reserved=0,attempt_settled=1,revision=revision+1 WHERE id=?",
+          )
+          .run(
+            task.execution_outcome === "success"
+              ? "completed"
+              : task.execution_outcome === "error"
+                ? "failed"
+                : "interrupted",
+            confirmed,
+            id,
+          );
+        return this.get(id);
+      })
+      .immediate();
+  }
+
+  recordGeneration(id: string, attemptId: string, generationId: string): void {
+    if (!/^gen-[A-Za-z0-9_-]+$/.test(generationId)) return;
+    const changed = this.db
+      .prepare(
+        "UPDATE tasks SET generation_id=? WHERE id=? AND attempt_id=? AND state='running' AND (generation_id IS NULL OR generation_id=?)",
+      )
+      .run(generationId, id, attemptId, generationId);
+    if (changed.changes !== 1) throw new Error("Generation identity conflict");
+  }
+
+  /** Bound metadata polling independently of generation admission. */
+  claimLookup(id: string, revision: number): TaskRecord {
+    return this.db
+      .transaction(() => {
+        const task = this.get(id);
+        if (
+          !["uncertain", "interrupted"].includes(task.state) ||
+          task.revision !== revision ||
+          !task.generation_id ||
+          task.attempt_settled ||
+          task.lookup_after > Date.now()
+        )
+          throw new Error("Accounting is unavailable or was checked recently");
+        this.db
+          .prepare("UPDATE tasks SET lookup_after=? WHERE id=?")
+          .run(Date.now() + 15000, id);
+        return task;
+      })
+      .immediate();
+  }
+
+  /** No provider dispatch has occurred for these states. */
+  failQueued(id: string): void {
+    this.db
+      .prepare(
+        "UPDATE tasks SET state='failed',revision=revision+1 WHERE id=? AND state='queued'",
+      )
+      .run(id);
+  }
+
+  interruptQueued(id: string): void {
+    this.db
+      .prepare(
+        "UPDATE tasks SET state='interrupted',revision=revision+1 WHERE id=? AND state='queued'",
+      )
+      .run(id);
+  }
+
+  /** An abandoned submission cannot permanently occupy the FIFO head.
+   * Attached streams may wait for capacity; only unattached work expires.
+   * Called on authenticated requests and while another stream waits, with no timer owner.
+   */
+  expireUnattached(attached: ReadonlySet<string>): void {
+    for (const task of this.list()) {
+      if (
+        task.state === "queued" &&
+        !attached.has(task.id) &&
+        task.queued_at + 30000 <= Date.now()
+      )
+        this.interruptQueued(task.id);
+    }
+  }
+
+  /** Exclusive service owner calls this on startup; no replay or dispatch. */
+  interruptOnRestart(): void {
+    this.db
+      .prepare(
+        "UPDATE tasks SET state='interrupted',revision=revision+1 WHERE state IN ('running','queued')",
+      )
+      .run();
+  }
+}

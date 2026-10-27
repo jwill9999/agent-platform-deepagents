@@ -2,6 +2,7 @@ import { createEmbedServer } from "@langchain/langgraph-api/experimental/embed";
 import { cors } from "hono/cors";
 import { setupRoutes } from "./setup.js";
 import { chatRoutes } from "./chat-routes.js";
+import { taskRoutes } from "./task-routes.js";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { bodyLimit } from "hono/body-limit";
@@ -53,8 +54,25 @@ export function createServiceApp(options: {
     c.json({ ok: true, execution_enabled: Boolean(options.connected) }),
   );
   if (options.connected) {
+    const attachedStreams = new Set<string>();
+    app.use(async (_c, next) => {
+      options.persistence.tasks.expireUnattached(attachedStreams);
+      await next();
+    });
     app.route("/", setupRoutes(options.persistence.metadata));
-    app.route("/", chatRoutes(framework, options.persistence.metadata));
+    app.route(
+      "/",
+      taskRoutes(options.persistence.tasks, options.persistence.metadata),
+    );
+    app.route(
+      "/",
+      chatRoutes(
+        framework,
+        options.persistence.metadata,
+        options.persistence.tasks,
+        attachedStreams,
+      ),
+    );
   }
   // Explicit allowlist: framework run/protocol/state-write/delete routes cannot bypass later admission policy.
   app.use(async (c, next) => {

@@ -57,6 +57,16 @@ beforeEach(() => {
       }
       if (path === "/setup/models") return models;
       if (path === "/threads") return chat;
+      if (path === "/tasks" && method === "POST")
+        return {
+          id: "submitted-task",
+          thread_id: chat.thread_id,
+          state: "queued",
+          allowance: 1000000000,
+          confirmed: 0,
+          reserved: 0,
+        };
+      if (path === "/tasks") return [];
     },
   );
   mock.search.mockResolvedValue([chat]);
@@ -183,13 +193,17 @@ test("restored history uses stored model; new chats separate messages; stream an
   fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
     target: { value: "Question" },
   });
-  await click("Send");
+  fireEvent.change(
+    screen.getByLabelText("Allowance for this instruction (USD)"),
+    { target: { value: "1" } },
+  );
+  await click("Send with allowance");
   await screen.findByText("Saved answer");
   expect(mock.stream).toHaveBeenCalledWith(
     "saved-thread",
     "general-chat",
     expect.objectContaining({
-      input: { messages: [{ type: "human", content: "Question" }] },
+      metadata: { task_id: "submitted-task" },
     }),
   );
   await click("Connection & models");
@@ -208,10 +222,12 @@ test("history and stream errors preserve controls and never automatically resend
   fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
     target: { value: "Question" },
   });
-  await click("Send");
-  await waitFor(() =>
-    expect(screen.getByRole("alert").textContent).toContain("Reply failed"),
+  fireEvent.change(
+    screen.getByLabelText("Allowance for this instruction (USD)"),
+    { target: { value: "1" } },
   );
+  await click("Send with allowance");
+  await waitFor(() => expect(mock.stream).toHaveBeenCalledOnce());
   expect(mock.stream).toHaveBeenCalledOnce();
   expect(screen.queryByText("private provider detail")).toBeNull();
 });
@@ -232,4 +248,56 @@ test("message rendering tolerates structured content without exposing non-text b
       response_metadata: { model: "m" },
     }),
   ).toBe("m");
+});
+
+test("a returned queued task still starts if incidental refresh fails", async () => {
+  await chatScreen();
+  const original = mock.request.getMockImplementation()!;
+  mock.request.mockImplementation(async (path, method, body) => {
+    const value = await original(path, method, body);
+    if (path === "/tasks" && method === "POST") {
+      mock.search.mockRejectedValue(new Error("refresh failed"));
+      return value;
+    }
+    return value;
+  });
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+    target: { value: "Question" },
+  });
+  fireEvent.change(
+    screen.getByLabelText("Allowance for this instruction (USD)"),
+    { target: { value: "1" } },
+  );
+  await click("Send with allowance");
+  await waitFor(() => expect(mock.stream).toHaveBeenCalledOnce());
+  await screen.findByRole("alert");
+});
+test("selected task state drives approval controls without sending another instruction", async () => {
+  await chatScreen();
+  const original = mock.request.getMockImplementation()!;
+  mock.request.mockImplementation(async (path, method, body) =>
+    path === "/tasks"
+      ? [
+          {
+            id: "queued",
+            thread_id: chat.thread_id,
+            state: "awaiting_approval",
+            revision: 1,
+            allowance: 0,
+            confirmed: 0,
+            reserved: 0,
+            estimate: 100,
+            decision_id: "decision",
+            attempt_settled: 0,
+          },
+        ]
+      : original(path, method, body),
+  );
+  await click(/Saved discussion/);
+  await screen.findByRole("button", { name: "Approve increase" });
+  expect(
+    (screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement)
+      .disabled,
+  ).toBe(true);
+  expect(mock.stream).not.toHaveBeenCalled();
 });

@@ -1,8 +1,26 @@
+import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createServiceApp } from "../apps/agent-service/src/app.js";
 import { openPersistence } from "../apps/agent-service/src/persistence.js";
 import { createServiceAgent } from "../packages/agent/src/service-agent.js";
 import { cleanUp, privateFixture } from "./fixtures.js";
+vi.mock("../apps/agent-service/src/accounting.js", async (original) => ({
+  ...(await original<
+    typeof import("../apps/agent-service/src/accounting.js")
+  >()),
+  quoteModel: vi.fn(async () => ({
+    estimate: 100,
+    obtainedAt: Date.now(),
+    contextTokens: 1000,
+    provider: {
+      only: ["synthetic"],
+      allow_fallbacks: false,
+      require_parameters: true,
+      max_price: { prompt: "1", completion: "1", request: "0" },
+    },
+  })),
+  generationCost: vi.fn(async () => 0),
+}));
 let fixture: ReturnType<typeof privateFixture>;
 let persistence: ReturnType<typeof openPersistence>;
 let app: ReturnType<typeof createServiceApp>;
@@ -76,9 +94,14 @@ async function newChat() {
   return (await request("/threads", {})).json();
 }
 function run(id: string, extra = {}) {
+  const previous = persistence.tasks.list().findLast((t) => t.thread_id === id);
+  const task =
+    previous && ["queued", "running", "uncertain"].includes(previous.state)
+      ? previous
+      : persistence.tasks.submit(randomUUID(), id, "hello", 1000);
   return request(`/threads/${id}/runs/stream`, {
     assistant_id: "general-chat",
-    input: { messages: [{ type: "human", content: "hello" }] },
+    metadata: { task_id: task.id },
     ...extra,
   });
 }
@@ -200,7 +223,7 @@ test("new chats pin defaults; browser boundary and all client policy overrides a
   });
   expect((await run(thread.thread_id)).status).toBe(409);
 });
-test("framework checkpoint failure is durable error before EOF and permits explicit later send", async () => {
+test("checkpoint failure retains uncertain reservation; separate chat can still run", async () => {
   const thread = await newChat();
   const get = vi
     .spyOn(persistence.checkpointer, "getTuple")
@@ -213,7 +236,10 @@ test("framework checkpoint failure is durable error before EOF and permits expli
   ).toBe("error");
   get.mockRestore();
   vi.mocked(fetch).mockRejectedValue(new Error("sensitive provider details"));
-  const again = await run(thread.thread_id);
+  expect((await run(thread.thread_id)).status).toBe(409);
+  expect(persistence.tasks.list().at(-1)?.reserved).toBe(100);
+  const separate = await newChat();
+  const again = await run(separate.thread_id);
   expect(again.status).toBe(200);
   const body = await again.text();
   expect(body).toContain("model could not complete");
@@ -277,9 +303,11 @@ test("admission storage failures return generic errors and release the unfinishe
   const result = await run(thread.thread_id);
   expect(result.status).toBe(502);
   expect(await result.text()).not.toContain("private storage detail");
-  // A later explicit send reaches the framework instead of remaining blocked.
+  // Unknown charge blocks that task, without blocking another chat.
   vi.mocked(fetch).mockRejectedValue(new Error("synthetic"));
-  const next = await run(thread.thread_id);
+  expect((await run(thread.thread_id)).status).toBe(409);
+  const separate = await newChat();
+  const next = await run(separate.thread_id);
   expect(next.status).toBe(200);
   await next.text();
   await original("invalid-framework-id", {
@@ -287,4 +315,79 @@ test("admission storage failures return generic errors and release the unfinishe
     metadata: { model: "test/general" },
   });
   expect((await run("invalid-framework-id")).status).toBe(502);
+});
+
+test("zero allowance asks before dispatch; absent task and abandoned waiting requests do not occupy capacity", async () => {
+  const thread = await newChat();
+  const t = persistence.tasks.submit(randomUUID(), thread.thread_id, "zero", 0);
+  expect((await run(thread.thread_id)).status).toBe(409);
+  expect(persistence.tasks.get(t.id).state).toBe("awaiting_approval");
+  expect(fetch).not.toHaveBeenCalled();
+  expect(
+    (
+      await request(`/threads/${thread.thread_id}/runs/stream`, {
+        assistant_id: "general-chat",
+        metadata: { task_id: "absent" },
+      })
+    ).status,
+  ).toBe(404);
+  const first = await newChat();
+  persistence.tasks.submit(randomUUID(), first.thread_id, "head", 1000);
+  const second = await newChat();
+  const queued = persistence.tasks.submit(
+    randomUUID(),
+    second.thread_id,
+    "waiting",
+    1000,
+  );
+  const controller = new AbortController();
+  const waiting = app.request(`/threads/${second.thread_id}/runs/stream`, {
+    method: "POST",
+    headers,
+    signal: controller.signal,
+    body: JSON.stringify({
+      assistant_id: "general-chat",
+      metadata: { task_id: queued.id },
+    }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  controller.abort();
+  expect((await waiting).status).toBe(409);
+  expect(persistence.tasks.get(queued.id).state).toBe("interrupted");
+});
+test("pricing outage and run-record failure cannot dispatch or leak a reservation", async () => {
+  const { quoteModel } =
+    await import("../apps/agent-service/src/accounting.js");
+  const thread = await newChat();
+  vi.mocked(quoteModel).mockRejectedValueOnce(new Error("unpriced"));
+  expect((await run(thread.thread_id)).status).toBe(409);
+  expect(persistence.tasks.list().at(-1)?.state).toBe("failed");
+  expect(fetch).not.toHaveBeenCalled();
+  vi.spyOn(persistence.metadata, "createRun").mockImplementationOnce(() => {
+    throw new Error("storage");
+  });
+  expect((await run(thread.thread_id)).status).toBe(409);
+  expect(persistence.tasks.list().at(-1)).toMatchObject({
+    state: "failed",
+    reserved: 0,
+    confirmed: 0,
+  });
+});
+test("service factory standalone configuration preserves no-fallback policy", async () => {
+  const agent = await createServiceAgent(() => {});
+  vi.mocked(fetch).mockImplementation(async (_url, options) => {
+    expect(JSON.parse(String(options?.body)).provider.allow_fallbacks).toBe(
+      false,
+    );
+    throw new Error("synthetic");
+  });
+  await expect(
+    agent.invoke(
+      { messages: [{ role: "user", content: "configuration check" }] },
+      {
+        context: { model: "test/general", admissionId: "synthetic" },
+        recursionLimit: 4,
+      },
+    ),
+  ).rejects.toThrow("model could not complete");
 });
