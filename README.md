@@ -1,6 +1,6 @@
 # agent-platform-deepagents
 
-Electron and Deep Agents TypeScript development pilot. M1-02 implements OpenRouter setup and durable General Chat; the owner has approved publication, with hosted CI and integration tracked separately.
+Electron and Deep Agents TypeScript development pilot. M1-02 delivers OpenRouter setup and durable General Chat, merged into staging through PR #11. See the qualification record and issue #2 for final acceptance and publication status.
 
 ## Product and delivery planning
 
@@ -96,4 +96,4 @@ The `SonarQube` job runs after `check`, on staging/main pushes and same-reposito
 
 Vitest generates real LCOV evidence. The check job uploads `coverage/lcov.info` with one-day retention; the scanner downloads it from that same workflow run and imports it. The unchanged Sonar way gate still requires at least 80% coverage and all its other conditions. The scanner waits up to five minutes for the gate and fails the job if it fails. See [coverage policy and evidence](docs/testing-strategy.md#early-phase-sonar-coverage-decision).
 
-Fork and Dependabot PRs do not receive secret-backed analysis; `check` still runs. Feature-branch pushes alone skip Sonar. A skipped scan is not a pass: verify the actual PR analysis before integration. Never use `pull_request_target` to execute untrusted code with secrets. The Sonar project's main branch remains `main`; treating staging as its analysis baseline requires a separate settings review.
+Fork and Dependabot PRs do not receive secret-backed analysis; `check` still runs. Feature-branch pushes alone skip Sonar. A skipped scan is not a pass: verify the actual PR analysis before integration. Never use `pull_request_target` to execute untrusted code with secrets. Sonar's primary analysis branch is `staging`, matching the integration baseline under the current single-branch plan. This is a Sonar project setting, not a Git branch rename or a scanner override. New code remains based on Previous version. Before the first release promotion to Git `main`, qualify a plan supporting both branches or an explicitly reviewed primary-baseline switch, then verify analysis of the exact release revision. The workflow retains the `main` check: do not silently skip it or treat an earlier staging scan as release verification.
