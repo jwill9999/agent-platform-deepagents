@@ -1,7 +1,7 @@
 # Agent Platform Deep Agents product specification
 
 Status: agreed product direction, recorded for review; not an implementation or release claim.
-Last updated: 26 October 2026 (Europe/London).
+Last updated: 27 October 2026 (Europe/London).
 Owner authority: decisions explicitly agreed in the repository scaffolding conversation.
 
 This application gives general users two distinct agents in an Electron desktop application. Users select General Chat or Coding explicitly. Both use Deep Agents as the execution harness, with different instructions and tools. Neither is implicitly a subagent of the other.
@@ -14,9 +14,9 @@ Implementation sequencing is defined in [milestone one](planning/milestone-1.md)
 
 The checkout is `/Users/letuscode/projects/agent-platform-deepagents`. M1-01 is accepted; its code/documentation and PR #10 coverage work are merged into staging (`28a1f61`). GitHub Issues owns live status. The original scaffold verification remains historical evidence.
 
-M1-02 now implements the React/Vite/shadcn Electron client, authenticated independent service, service-owned Keychain setup/defaults, narrow streamed General Chat and durable history. Real OpenRouter reply and fresh-process follow-up passed; supporting recovery/regression evidence and limits are in [M1-02 qualification](planning/m1-02-qualification.md). Implementation and closeout documentation integrated through PRs #11 and #12 after critique, pipeline verification and owner approval; M1-02 is accepted and GitHub #2 is closed. The M1-03 working candidate now implements allowance/queue behaviour with reviewed practical and subsequent regression evidence; publication and hosted PR verification remain outstanding.
+M1-02 now implements the React/Vite/shadcn Electron client, authenticated independent service, service-owned Keychain setup/defaults, narrow streamed General Chat and durable history. Real OpenRouter reply and fresh-process follow-up passed; supporting recovery/regression evidence and limits are in [M1-02 qualification](planning/m1-02-qualification.md). Implementation and closeout documentation integrated through PRs #11 and #12 after critique, pipeline verification and owner approval; M1-02 is accepted and GitHub #2 is closed. M1-01 through M1-04 are accepted and closed. OpenRouter General Chat, task allowances, two-task queueing, confirmed local Stop and bounded preconnection retries are integrated into `staging` at `da4118e` through PR #14. Post-merge CI and SonarQube passed. [Issue #4](https://github.com/jwill9999/agent-platform-deepagents/issues/4) records final acceptance; GitHub Issues owns live task status. This is a development pilot, not whole-milestone or installer acceptance.
 
-Not delivered by M1-02: task allowances/queue (now qualified in the M1-03 working candidate), Stop/Resume, background continuation/rejoin, notifications, product sandbox, document/coding workflows or installer. The temporary M1-01 VM was removed. Framework feasibility and CI alone do not establish these later outcomes.
+Still outside accepted delivery through M1-04: explicit Resume, background continuation/rejoin, activity notifications, product sandbox, document/coding workflows and installer. The temporary M1-01 VM was removed. Framework feasibility and CI alone do not establish these later outcomes.
 
 ## Agreed requirements
 

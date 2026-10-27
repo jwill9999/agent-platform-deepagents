@@ -1,6 +1,6 @@
 # agent-platform-deepagents
 
-Electron and Deep Agents TypeScript development pilot. M1-01 through M1-03 are accepted, including OpenRouter General Chat, task allowances and two-task queueing. The M1-04 working candidate adds confirmed local Stop and bounded preconnection retries; local practical checks and regressions pass, with owner publication approval and hosted checks outstanding. See the milestone plan and issue #4 for evidence and live delivery status.
+Electron and Deep Agents TypeScript development pilot. M1-01 through M1-04 are accepted and closed. OpenRouter General Chat, task allowances, two-task queueing, confirmed local Stop and bounded preconnection retries are integrated into `staging` at `da4118e` through PR #14. Post-merge CI and SonarQube passed. [Issue #4](https://github.com/jwill9999/agent-platform-deepagents/issues/4) records final acceptance; GitHub Issues owns live task status. This is a development pilot, not whole-milestone or installer acceptance.
 
 ## Product and delivery planning
 
