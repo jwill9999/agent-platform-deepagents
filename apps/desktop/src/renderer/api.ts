@@ -55,11 +55,13 @@ export type Chat = {
   metadata: { model: string; title: string };
 };
 export type Message = {
+  id?: string;
   type: string;
   content: unknown;
   response_metadata?: { model?: string; model_name?: string };
 };
 export type Task = {
+  input_identity_version: number;
   id: string;
   thread_id: string;
   state:

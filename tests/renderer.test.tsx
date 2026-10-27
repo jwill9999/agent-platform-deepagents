@@ -188,7 +188,7 @@ test("replacement key is cleared on failure; catalogue failure has explicit retr
   await screen.findByRole("alert");
   expect(initialDefaults).toBeNull();
 });
-test("restored history uses stored model; new chats separate messages; stream and response identity render", async () => {
+test("restored history uses stored model; new chats separate messages; polled history and response identity render", async () => {
   await chatScreen();
   await click(/Saved discussion/);
   await screen.findByText("Saved answer");
@@ -203,20 +203,19 @@ test("restored history uses stored model; new chats separate messages; stream an
     { target: { value: "1" } },
   );
   await click("Send with allowance");
-  await screen.findByText("Saved answer");
-  expect(mock.stream).toHaveBeenCalledWith(
-    "saved-thread",
-    "general-chat",
-    expect.objectContaining({
-      metadata: { task_id: "submitted-task" },
-    }),
+  await screen.findByText("Saved answer", {}, { timeout: 3000 });
+  expect(mock.stream).not.toHaveBeenCalled();
+  expect(mock.request).toHaveBeenCalledWith(
+    "/tasks",
+    "POST",
+    expect.objectContaining({ instruction: "Question" }),
   );
   await click("Connection & models");
   await screen.findByRole("heading", { name: "Connect OpenRouter" });
   await click("Back to chats");
   await screen.findByRole("heading", { name: "General Chat" });
 });
-test("history and stream errors preserve controls and never automatically resend", async () => {
+test("history and submission errors preserve controls and never automatically resend", async () => {
   await chatScreen();
   mock.state.mockRejectedValueOnce(new Error("Unavailable"));
   await click(/Saved discussion/);
@@ -232,8 +231,19 @@ test("history and stream errors preserve controls and never automatically resend
     { target: { value: "1" } },
   );
   await click("Send with allowance");
-  await waitFor(() => expect(mock.stream).toHaveBeenCalledOnce());
-  expect(mock.stream).toHaveBeenCalledOnce();
+  await waitFor(() =>
+    expect(mock.request).toHaveBeenCalledWith(
+      "/tasks",
+      "POST",
+      expect.objectContaining({ instruction: "Question" }),
+    ),
+  );
+  expect(mock.stream).not.toHaveBeenCalled();
+  expect(
+    mock.request.mock.calls.filter(
+      ([path, method]) => path === "/tasks" && method === "POST",
+    ),
+  ).toHaveLength(1);
   expect(screen.queryByText("private provider detail")).toBeNull();
 });
 test("message rendering tolerates structured content without exposing non-text blocks", () => {
@@ -255,7 +265,7 @@ test("message rendering tolerates structured content without exposing non-text b
   ).toBe("m");
 });
 
-test("a returned queued task still starts if incidental refresh fails", async () => {
+test("accepted submission is not resent if incidental refresh fails", async () => {
   await chatScreen();
   const original = mock.request.getMockImplementation()!;
   mock.request.mockImplementation(async (path, method, body) => {
@@ -274,7 +284,19 @@ test("a returned queued task still starts if incidental refresh fails", async ()
     { target: { value: "1" } },
   );
   await click("Send with allowance");
-  await waitFor(() => expect(mock.stream).toHaveBeenCalledOnce());
+  await waitFor(() =>
+    expect(mock.request).toHaveBeenCalledWith(
+      "/tasks",
+      "POST",
+      expect.objectContaining({ instruction: "Question" }),
+    ),
+  );
+  expect(mock.stream).not.toHaveBeenCalled();
+  expect(
+    mock.request.mock.calls.filter(
+      ([path, method]) => path === "/tasks" && method === "POST",
+    ),
+  ).toHaveLength(1);
   await screen.findByRole("alert");
 });
 test("selected task state drives approval controls without sending another instruction", async () => {
@@ -342,5 +364,79 @@ test("a newer task does not hide a retained incomplete reply from the same conve
   fireEvent.click(screen.getByRole("button", { name: /Saved discussion/ }));
   expect(await screen.findByText("Earlier incomplete reply")).toBeTruthy();
   expect(screen.getByText("General Chat · Incomplete reply")).toBeTruthy();
+  expect(mock.stream).not.toHaveBeenCalled();
+});
+
+test("late polling response cannot overwrite a newly selected conversation", async () => {
+  await chatScreen();
+  await click(/Saved discussion/);
+  await screen.findByText("Saved answer");
+  let release!: (v: unknown) => void;
+  mock.state.mockImplementationOnce(
+    () =>
+      new Promise((r) => {
+        release = r;
+      }),
+  );
+  await waitFor(() => expect(release).toBeTypeOf("function"), {
+    timeout: 3000,
+  });
+  await click("New chat");
+  release({
+    values: { messages: [{ type: "ai", content: "Stale old reply" }] },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(screen.queryByText("Stale old reply")).toBeNull();
+  expect(screen.queryByText("Saved answer")).toBeNull();
+  expect(mock.stream).not.toHaveBeenCalled();
+});
+test("polling renders partial progress, labels disconnected balances and reconnects without submission", async () => {
+  const original = mock.request.getMockImplementation()!;
+  mock.request.mockImplementation(async (path, method, body) =>
+    path === "/tasks"
+      ? [
+          {
+            id: "running",
+            thread_id: chat.thread_id,
+            state: "running",
+            allowance: 100,
+            confirmed: 0,
+            reserved: 10,
+            partial_text: "Current partial",
+            generation_id: null,
+          },
+        ]
+      : original(path, method, body),
+  );
+  await chatScreen();
+  await click(/Saved discussion/);
+  await screen.findByText("Current partial", {}, { timeout: 3000 });
+  failPath = "/tasks";
+  mock.request.mockImplementation(async (path, method, body) => {
+    if (path === failPath) throw new Error("offline");
+    return path === "/tasks"
+      ? [
+          {
+            id: "running",
+            thread_id: chat.thread_id,
+            state: "running",
+            allowance: 100,
+            confirmed: 0,
+            reserved: 10,
+            partial_text: "Current partial",
+          },
+        ]
+      : original(path, method, body);
+  });
+  await screen.findByText(/Last known allowance/, {}, { timeout: 3000 });
+  failPath = "";
+  await click("Reconnect");
+  await waitFor(
+    () => expect(screen.queryByText(/Last known allowance/)).toBeNull(),
+    { timeout: 3000 },
+  );
+  expect(
+    mock.request.mock.calls.filter((c) => c[0] === "/tasks" && c[1] === "POST"),
+  ).toHaveLength(0);
   expect(mock.stream).not.toHaveBeenCalled();
 });
