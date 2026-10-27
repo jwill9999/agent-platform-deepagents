@@ -36,6 +36,8 @@ export type TaskRecord = {
   partial_text: string;
   provider_attempts: number;
   retry_waiting: number;
+  input_identity_version: number;
+  resume_mode: "input" | "checkpoint";
 };
 
 function money(value: number): void {
@@ -121,6 +123,8 @@ export class TaskLedger {
       ["partial_text", "TEXT NOT NULL DEFAULT ''"],
       ["provider_attempts", "INTEGER NOT NULL DEFAULT 0"],
       ["retry_waiting", "INTEGER NOT NULL DEFAULT 0"],
+      ["resume_mode", "TEXT NOT NULL DEFAULT 'input'"],
+      ["input_identity_version", "INTEGER NOT NULL DEFAULT 0"],
     ]) {
       if (!columns.some((c) => c.name === name))
         this.db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`);
@@ -128,6 +132,10 @@ export class TaskLedger {
     this.db
       .exec(`CREATE UNIQUE INDEX IF NOT EXISTS one_open_task_per_thread ON tasks(thread_id)
       WHERE state IN ('queued','running','stopping','awaiting_approval','uncertain','interrupted');
+      CREATE TABLE IF NOT EXISTS task_resumes (
+        task_id TEXT NOT NULL REFERENCES tasks(id), revision INTEGER NOT NULL,
+        previous_attempt TEXT NOT NULL, PRIMARY KEY(task_id, revision)
+      );
       CREATE TABLE IF NOT EXISTS provider_attempts (
         run_id TEXT NOT NULL, ordinal INTEGER NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id),
         reservation INTEGER NOT NULL, outcome TEXT NOT NULL, generation_id TEXT, confirmed_cost INTEGER,
@@ -143,6 +151,19 @@ export class TaskLedger {
       .get(run);
     if (!row) throw new Error("Execution not admitted");
     return row as TaskRecord;
+  }
+
+  /** A quote, including zero, is not evidence of the provider's final charge. */
+  knownUncharged(run: string): boolean {
+    const task = this.forRun(run);
+    if (task.provider_attempts === 0) return true;
+    return Boolean(
+      this.db
+        .prepare(
+          "SELECT 1 FROM provider_attempts WHERE run_id=? AND ordinal=? AND outcome='not_sent'",
+        )
+        .get(run, task.provider_attempts),
+    );
   }
 
   beginProviderAttempt(run: string): void {
@@ -277,7 +298,7 @@ export class TaskLedger {
         }
         this.db
           .prepare(
-            "INSERT INTO tasks (id,thread_id,instruction,state,allowance,initial_allowance,queue_order,queued_at) VALUES (?,?,?,'queued',?,?,?,?)",
+            "INSERT INTO tasks (id,thread_id,instruction,state,allowance,initial_allowance,queue_order,queued_at,input_identity_version) VALUES (?,?,?,'queued',?,?,?,?,1)",
           )
           .run(
             id,
@@ -550,27 +571,81 @@ export class TaskLedger {
       .run(id);
   }
 
-  /** An abandoned submission cannot permanently occupy the FIFO head.
-   * Attached streams may wait for capacity; only unattached work expires.
-   * Called on authenticated requests and while another stream waits, with no timer owner.
-   */
-  expireUnattached(attached: ReadonlySet<string>): void {
-    for (const task of this.list()) {
-      if (
-        task.state === "queued" &&
-        !attached.has(task.id) &&
-        task.queued_at + 30000 <= Date.now()
-      )
-        this.interruptQueued(task.id);
-    }
+  hasResume(id: string, revision: number): boolean {
+    return Boolean(
+      this.db
+        .prepare("SELECT 1 FROM task_resumes WHERE task_id=? AND revision=?")
+        .get(id, revision),
+    );
   }
 
-  /** Exclusive service owner calls this on startup; no replay or dispatch. */
+  assertResumable(t: TaskRecord, revision: number): void {
+    if (t.revision !== revision || t.state !== "interrupted")
+      throw new Error("Task cannot resume");
+    if (t.reserved !== 0 || (t.provider_attempts > 0 && !t.attempt_settled))
+      throw new Error("Previous charge unresolved");
+    if (!t.input_identity_version && t.attempt_id)
+      throw new Error("Legacy checkpoint needs review");
+    if (t.confirmed > t.allowance) throw new Error("Allowance exceeded");
+  }
+
+  resume(
+    id: string,
+    revision: number,
+    mode: "input" | "checkpoint" | "complete",
+  ): TaskRecord {
+    return this.db
+      .transaction(() => {
+        if (this.hasResume(id, revision)) return this.get(id);
+        const task = this.get(id);
+        this.assertResumable(task, revision);
+        this.db
+          .prepare("INSERT INTO task_resumes VALUES (?,?,?)")
+          .run(id, revision, JSON.stringify(task));
+        this.db
+          .prepare(
+            `UPDATE tasks SET state=?,resume_mode=?,input_identity_version=1,queue_order=?,queued_at=?,
+        attempt_id=CASE WHEN ? THEN attempt_id ELSE NULL END,generation_id=CASE WHEN ? THEN generation_id ELSE NULL END,provider_attempts=0,retry_waiting=0,
+        attempt_settled=?,execution_outcome=?,partial_text='',lookup_after=0,revision=revision+1 WHERE id=?`,
+          )
+          .run(
+            mode === "complete" ? "completed" : "queued",
+            mode === "checkpoint" ? "checkpoint" : "input",
+            this.nextOrder(),
+            Date.now(),
+            Number(mode === "complete"),
+            Number(mode === "complete"),
+            Number(mode === "complete"),
+            mode === "complete" ? "success" : null,
+            id,
+          );
+        return this.get(id);
+      })
+      .immediate();
+  }
+
+  /** Exclusive owner only; preserve Stop intent and positive no-dispatch evidence. */
   interruptOnRestart(): void {
     this.db
-      .prepare(
-        "UPDATE tasks SET state='interrupted',revision=revision+1 WHERE state IN ('running','stopping','queued')",
-      )
-      .run();
+      .transaction(() => {
+        this.db
+          .prepare(
+            `UPDATE provider_attempts SET outcome='uncertain' WHERE outcome='dispatched'
+        AND run_id IN (SELECT attempt_id FROM tasks WHERE state IN ('running','stopping'))`,
+          )
+          .run();
+        this.db
+          .prepare(
+            `UPDATE tasks SET state=CASE WHEN state='stopping' THEN 'stopped' ELSE 'interrupted' END,
+        reserved=CASE WHEN provider_attempts=0 THEN 0 ELSE reserved END,
+        attempt_settled=CASE WHEN provider_attempts=0 OR EXISTS (
+          SELECT 1 FROM provider_attempts p WHERE p.run_id=tasks.attempt_id
+          AND p.ordinal=tasks.provider_attempts AND p.outcome='not_sent'
+        ) THEN 1 ELSE attempt_settled END,
+        retry_waiting=0,revision=revision+1 WHERE state IN ('running','stopping','queued')`,
+          )
+          .run();
+      })
+      .immediate();
   }
 }

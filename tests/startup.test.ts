@@ -8,6 +8,7 @@ const s = vi.hoisted(() => ({
   app: vi.fn(),
   open: vi.fn(),
   close: vi.fn(),
+  drain: vi.fn(),
   serverClose: vi.fn(),
   connections: vi.fn(),
   serverOnce: vi.fn(),
@@ -49,8 +50,9 @@ beforeEach(() => {
     close: s.close,
     metadata: { getRun: s.getRun, finishRun: s.finishRun },
   });
-  s.app.mockReturnValue({ fetch: vi.fn() });
-  s.serverClose.mockImplementation((callback: () => void) => callback());
+  s.app.mockReturnValue({ fetch: vi.fn(), close: s.drain });
+  s.drain.mockResolvedValue(undefined);
+
   s.serve.mockReturnValue({
     close: s.serverClose,
     closeAllConnections: s.connections,
@@ -79,7 +81,7 @@ test("standalone startup binds loopback, disables tracing and closes storage onc
   expect(process.umask()).toBe(0o077);
   signals.get("SIGINT")!();
   signals.get("SIGTERM")!();
-  expect(s.close).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(s.close).toHaveBeenCalledOnce());
   expect(s.connections).toHaveBeenCalledOnce();
   expect(fetch).not.toHaveBeenCalled();
 });

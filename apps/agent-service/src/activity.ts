@@ -38,6 +38,12 @@ export class ActivityStore {
         VALUES('execution:'||NEW.attempt_id,NEW.id,NEW.thread_id,
           CASE WHEN NEW.state='stopped' THEN 'stopped' WHEN NEW.execution_outcome='success' THEN 'completed' ELSE 'failed' END);
       END;
+      CREATE TRIGGER IF NOT EXISTS activity_recovered_stop AFTER UPDATE ON tasks
+      WHEN NEW.state='stopped' AND OLD.state='stopping' AND NEW.execution_outcome IS NULL
+      BEGIN
+        INSERT OR IGNORE INTO activity_events(event_key,task_id,thread_id,kind)
+        VALUES('stop:'||NEW.id||':'||NEW.revision,NEW.id,NEW.thread_id,'stopped');
+      END;
       CREATE TRIGGER IF NOT EXISTS activity_interruption AFTER UPDATE ON tasks
       WHEN NEW.state IN ('failed','interrupted') AND OLD.state!=NEW.state AND NEW.execution_outcome IS NULL
       BEGIN

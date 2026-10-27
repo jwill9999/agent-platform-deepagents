@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { setupRoutes } from "./setup.js";
 import { chatRoutes } from "./chat-routes.js";
 import { activityRoutes } from "./activity.js";
+import { TaskLifecycle } from "./task-lifecycle.js";
 import { taskRoutes } from "./task-routes.js";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
@@ -34,7 +35,10 @@ export function createServiceApp(options: {
     graph: Object.fromEntries(
       Object.entries(options.graph).map(([name, graph]) => [
         name,
-        graph.withConfig({ callbacks: [execution.callbacks] }),
+        graph.withConfig({
+          callbacks: [execution.callbacks],
+          durability: "sync",
+        }),
       ]),
     ),
     threads: options.persistence.metadata,
@@ -63,12 +67,13 @@ export function createServiceApp(options: {
   app.get("/ok", (c) =>
     c.json({ ok: true, execution_enabled: Boolean(options.connected) }),
   );
+  const lifecycle = new TaskLifecycle(
+    framework,
+    options.persistence.metadata,
+    options.persistence.tasks,
+    execution,
+  );
   if (options.connected) {
-    const attachedStreams = new Set<string>();
-    app.use(async (_c, next) => {
-      options.persistence.tasks.expireUnattached(attachedStreams);
-      await next();
-    });
     app.route("/", setupRoutes(options.persistence.metadata));
     app.route("/", activityRoutes(options.persistence.activity));
     app.route(
@@ -77,18 +82,10 @@ export function createServiceApp(options: {
         options.persistence.tasks,
         options.persistence.metadata,
         execution,
+        lifecycle,
       ),
     );
-    app.route(
-      "/",
-      chatRoutes(
-        framework,
-        options.persistence.metadata,
-        options.persistence.tasks,
-        attachedStreams,
-        execution,
-      ),
-    );
+    app.route("/", chatRoutes(options.persistence.metadata));
   }
   // Explicit allowlist: framework run/protocol/state-write/delete routes cannot bypass later admission policy.
   app.use(async (c, next) => {
@@ -104,5 +101,5 @@ export function createServiceApp(options: {
     await next();
   });
   app.route("/", framework);
-  return app;
+  return Object.assign(app, { close: () => lifecycle.close() });
 }

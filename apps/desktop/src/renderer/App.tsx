@@ -40,7 +40,7 @@ export function App() {
   const [allowance, setAllowance] = useState("");
   const selectedChat = useRef<string | undefined>(undefined);
   const historyVersion = useRef(0);
-  const streaming = useRef(new Set<string>());
+  const [disconnected, setDisconnected] = useState(false);
   const submission = useRef<
     | {
         id: string;
@@ -62,9 +62,38 @@ export function App() {
     async function poll() {
       try {
         const list = await api!.request<Task[]>("/tasks");
-        if (!cancelled) setTasks(list);
+        if (!cancelled) {
+          setTasks(list);
+          setDisconnected(false);
+        }
+        const id = selectedChat.current;
+        const version = historyVersion.current;
+        if (id) {
+          const state = await api!.client.threads.getState(id);
+          if (
+            !cancelled &&
+            selectedChat.current === id &&
+            historyVersion.current === version
+          ) {
+            const saved =
+              (state.values as { messages?: Message[] }).messages ?? [];
+            setMessages(saved);
+            setActualModel(
+              effectiveModel(saved.findLast((m) => m.type === "ai")),
+            );
+            const task = list.findLast((t) => t.thread_id === id);
+            setPartial(
+              task?.state === "running" &&
+                !saved.some(
+                  (m) => m.type === "ai" && m.id === task.generation_id,
+                )
+                ? task.partial_text
+                : "",
+            );
+          }
+        }
       } catch {
-        /* keep last known state */
+        if (!cancelled) setDisconnected(true);
       } finally {
         if (!cancelled) timer = setTimeout(() => void poll(), 1000);
       }
@@ -207,60 +236,6 @@ export function App() {
     await refreshTasks();
     await openChat(thread as unknown as Chat);
   }
-  async function runTask(task: Task) {
-    if (!api || streaming.current.has(task.id)) return;
-    streaming.current.add(task.id);
-    try {
-      for await (const part of api.client.runs.stream(
-        task.thread_id,
-        "general-chat",
-        { metadata: { task_id: task.id }, streamMode: ["messages", "values"] },
-      )) {
-        if (part.event === "error") throw new Error("Reply failed");
-        if (selectedChat.current !== task.thread_id) continue;
-        if (part.event === "messages/partial") {
-          historyVersion.current++;
-          const message = (part.data as unknown as [Message])[0];
-          setPartial(textContent(message.content));
-          if (effectiveModel(message)) setActualModel(effectiveModel(message));
-        }
-        if (part.event === "values") {
-          historyVersion.current++;
-          setMessages((part.data as { messages?: Message[] }).messages ?? []);
-          setPartial("");
-        }
-      }
-    } catch {
-      // Durable task state distinguishes approval waiting, uncertainty and failure.
-    } finally {
-      streaming.current.delete(task.id);
-      try {
-        await refreshTasks();
-        await refreshChats(api);
-        if (selectedChat.current === task.thread_id) {
-          const version = ++historyVersion.current;
-          const state = await api.client.threads.getState(task.thread_id);
-          if (
-            selectedChat.current === task.thread_id &&
-            historyVersion.current === version
-          ) {
-            const saved =
-              (state.values as { messages?: Message[] }).messages ?? [];
-            setMessages(saved);
-            setPartial("");
-            setActualModel(
-              effectiveModel(saved.findLast((m) => m.type === "ai")),
-            );
-          }
-        }
-      } catch {
-        if (selectedChat.current === task.thread_id)
-          setError(
-            "Could not refresh task state. No automatic resend was made.",
-          );
-      }
-    }
-  }
   async function send(event: React.FormEvent) {
     event.preventDefault();
     if (!draft.trim() || busy || blocked || !allowance) return;
@@ -295,7 +270,6 @@ export function App() {
         ...previous.filter((t) => t.id !== task.id),
         task,
       ]);
-      if (task.state === "queued") void runTask(task);
       await refreshTasks();
       await refreshChats(api!);
     } catch (e) {
@@ -625,7 +599,8 @@ export function App() {
                   (t) =>
                     t.thread_id === chat?.thread_id &&
                     t.partial_text &&
-                    (t.state === "stopped" ||
+                    (t.state === "stopping" ||
+                      t.state === "stopped" ||
                       t.execution_outcome === "error" ||
                       t.state === "interrupted") &&
                     !(t.id === currentTask?.id && partial),
@@ -652,13 +627,32 @@ export function App() {
                 {error}
               </p>
             )}
+            {disconnected && (
+              <p className="alert" role="status">
+                Connection unavailable. This task may still be running and using
+                API credits. Reconnecting checks the same task; it does not
+                resend your instruction.
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void initialise()}
+                >
+                  Reconnect
+                </Button>
+              </p>
+            )}
+            <p className="footnote">
+              Closing the window or quitting the desktop does not stop accepted
+              tasks. They may keep using API credits while the service and Mac
+              remain available. Use Stop task to request cancellation.
+            </p>
             {currentTask && api && (
               <TaskPanel
                 key={currentTask.id}
                 task={currentTask}
+                disconnected={disconnected}
                 api={api}
                 refresh={refreshTasks}
-                start={(task) => void runTask(task)}
               />
             )}
             <form className="composer" onSubmit={send}>

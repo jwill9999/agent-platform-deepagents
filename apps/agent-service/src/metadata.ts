@@ -176,6 +176,15 @@ export class MetadataStore implements ThreadSaver {
     );
   }
 
+  /** Retire old interrupted execution metadata; the task retains its history. */
+  retireInterrupted(threadId: string): void {
+    this.db
+      .prepare(
+        "UPDATE runs SET status='error',updated_at=? WHERE thread_id=? AND status='interrupted'",
+      )
+      .run(Date.now(), threadId);
+  }
+
   /** Explicit caller action only; automatic startup reconciliation cannot resume. */
   requestResume(runId: string): void {
     this.transition(runId, ["interrupted"], "pending");

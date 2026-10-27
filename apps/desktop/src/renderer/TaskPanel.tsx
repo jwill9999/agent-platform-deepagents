@@ -31,12 +31,12 @@ export function TaskPanel({
   task,
   api,
   refresh,
-  start,
+  disconnected = false,
 }: {
   task: Task;
   api: Api;
   refresh: () => Promise<void>;
-  start: (task: Task) => void;
+  disconnected?: boolean;
 }) {
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
@@ -45,17 +45,12 @@ export function TaskPanel({
     setBusy(true);
     setError("");
     try {
-      const updated = await api.request<Task>(
-        `/tasks/${task.id}/decision`,
-        "POST",
-        {
-          decisionId: task.decision_id,
-          revision: task.revision,
-          approved,
-          allowanceUsd: approved ? amount : dollars(task.allowance),
-        },
-      );
-      if (approved && updated.state === "queued") start(updated);
+      await api.request<Task>(`/tasks/${task.id}/decision`, "POST", {
+        decisionId: task.decision_id,
+        revision: task.revision,
+        approved,
+        allowanceUsd: approved ? amount : dollars(task.allowance),
+      });
       await refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -64,6 +59,20 @@ export function TaskPanel({
       } catch {
         /* preserve actionable error */
       }
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function resume() {
+    setBusy(true);
+    setError("");
+    try {
+      await api.request(`/tasks/${task.id}/resume`, "POST", {
+        revision: task.revision,
+      });
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -136,9 +145,9 @@ export function TaskPanel({
       )}
       {task.state === "stopped" && (
         <p>
-          Local execution has ended. Nothing restarts automatically. Any
-          retained partial reply is incomplete; provider billing may still be
-          pending.
+          Local execution has ended. This task stays stopped after restart and
+          cannot be resumed. Any retained partial reply is incomplete; provider
+          billing may still be pending.
         </p>
       )}
       {task.provider_attempts > 0 && (
@@ -171,10 +180,36 @@ export function TaskPanel({
       )}
       {task.state === "interrupted" && (
         <p>
-          Execution was interrupted. Accounting can be refreshed without
-          restarting the task. Resume is not available in this slice.
+          Nothing restarts automatically. Resume continues this task from saved
+          progress using its remaining allowance. A model step may need to run
+          again.
         </p>
       )}
+      {task.state === "interrupted" &&
+        (task.reserved === 0 &&
+        (task.input_identity_version > 0 || !task.attempt_id) &&
+        (task.provider_attempts === 0 || task.attempt_settled) ? (
+          <Button
+            type="button"
+            disabled={busy || task.confirmed > task.allowance}
+            onClick={() => void resume()}
+          >
+            Resume task
+          </Button>
+        ) : (
+          <p role="status">
+            {task.input_identity_version === 0 && task.attempt_id ? (
+              "Resume unavailable. This older task’s saved progress needs review before it can safely continue."
+            ) : (
+              <>
+                Resume unavailable while the previous charge is unresolved.{" "}
+                {task.generation_id
+                  ? "Refresh accounting before continuing."
+                  : "The provider charge cannot currently be looked up. No new request will be sent; unknown cost is not zero cost."}
+              </>
+            )}
+          </p>
+        ))}
       {task.state === "failed" && (
         <p>
           Pricing, admission or execution failed. No further attempts will
@@ -183,9 +218,9 @@ export function TaskPanel({
         </p>
       )}
       <p className="task-amounts">
-        Allowance ${dollars(task.allowance)} · Confirmed $
-        {dollars(task.confirmed)} · Reserved ${dollars(task.reserved)} ·
-        Available $
+        {disconnected ? "Last known allowance" : "Allowance"} $
+        {dollars(task.allowance)} · Confirmed ${dollars(task.confirmed)} ·
+        Reserved ${dollars(task.reserved)} · Available $
         {dollars(Math.max(0, task.allowance - task.confirmed - task.reserved))}
       </p>
       {task.confirmed > task.allowance && (

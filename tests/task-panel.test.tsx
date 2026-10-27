@@ -15,6 +15,7 @@ import {
 import type { Api, Task } from "../apps/desktop/src/renderer/api.js";
 afterEach(cleanup);
 const task: Task = {
+  input_identity_version: 1,
   id: "task",
   thread_id: "chat",
   state: "awaiting_approval",
@@ -34,27 +35,26 @@ const task: Task = {
 };
 function mount(t = task) {
   const request = vi.fn(),
-    refresh = vi.fn().mockResolvedValue(undefined),
-    start = vi.fn();
+    refresh = vi.fn().mockResolvedValue(undefined);
   render(
     <TaskPanel
       task={t}
       api={{ request } as unknown as Api}
       refresh={refresh}
-      start={start}
     />,
   );
-  return { request, refresh, start };
+  return { request, refresh };
 }
-test("approval attaches returned task even when the incidental refresh fails", async () => {
-  const { request, refresh, start } = mount();
+test("approval remains service-owned when incidental refresh fails", async () => {
+  const { request, refresh } = mount();
   request.mockResolvedValue({ ...task, state: "queued" });
   refresh.mockRejectedValue(new Error("refresh unavailable"));
   fireEvent.change(screen.getByLabelText("New total allowance (USD)"), {
     target: { value: "1" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Approve increase" }));
-  await waitFor(() => expect(start).toHaveBeenCalledOnce());
+  await waitFor(() => expect(refresh).toHaveBeenCalled());
+  expect(request).toHaveBeenCalledTimes(1);
   expect(await screen.findByRole("alert")).toBeTruthy();
   expect(request).toHaveBeenCalledWith("/tasks/task/decision", "POST", {
     decisionId: "decision",
@@ -64,18 +64,18 @@ test("approval attaches returned task even when the incidental refresh fails", a
   });
 });
 test("denial preserves allowance; stale failures show an actionable error and do not dispatch", async () => {
-  const { request, start } = mount();
+  const { request } = mount();
   request.mockRejectedValue(new Error("Decision is stale"));
   fireEvent.click(screen.getByRole("button", { name: "Deny increase" }));
   await screen.findByText("Decision is stale");
-  expect(start).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledTimes(1);
   expect(request.mock.calls[0]?.[2]).toMatchObject({
     approved: false,
     allowanceUsd: dollars(100),
   });
 });
 test("accounting refresh preserves uncertainty and never starts execution", async () => {
-  const { request, start, refresh } = mount({
+  const { request, refresh } = mount({
     ...task,
     state: "uncertain",
     generation_id: "gen-one",
@@ -84,7 +84,7 @@ test("accounting refresh preserves uncertainty and never starts execution", asyn
   request.mockResolvedValue(task);
   fireEvent.click(screen.getByRole("button", { name: "Refresh accounting" }));
   await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
-  expect(start).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledTimes(1);
   request.mockRejectedValueOnce(new Error("Unavailable"));
   fireEvent.click(screen.getByRole("button", { name: "Refresh accounting" }));
   await screen.findByText("Unavailable");
@@ -151,5 +151,48 @@ test("successful Stop refreshes; failed refresh remains explicitly unconfirmed",
     expect(screen.getByRole("alert").textContent).toContain(
       "Could not confirm Stop",
     ),
+  );
+});
+
+test("Resume carries revision, exposes errors, and never submits a new instruction", async () => {
+  const { request, refresh } = mount({
+    ...task,
+    state: "interrupted",
+    attempt_settled: 1,
+  });
+  request.mockRejectedValueOnce(new Error("Saved progress unavailable"));
+  fireEvent.click(screen.getByRole("button", { name: "Resume task" }));
+  await screen.findByText("Saved progress unavailable");
+  request.mockResolvedValue(task);
+  fireEvent.click(screen.getByRole("button", { name: "Resume task" }));
+  await waitFor(() => expect(refresh).toHaveBeenCalled());
+  expect(request).toHaveBeenLastCalledWith("/tasks/task/resume", "POST", {
+    revision: 1,
+  });
+});
+test.each([
+  {
+    provider_attempts: 1,
+    reserved: 10,
+    generation_id: null,
+    input_identity_version: 1,
+  },
+  {
+    provider_attempts: 1,
+    reserved: 10,
+    generation_id: "gen-pending",
+    input_identity_version: 1,
+  },
+  {
+    provider_attempts: 0,
+    reserved: 0,
+    generation_id: null,
+    input_identity_version: 0,
+  },
+])("blocked recovery never exposes an unusable Resume", (overrides) => {
+  mount({ ...task, state: "interrupted", attempt_id: "old", ...overrides });
+  expect(screen.queryByRole("button", { name: "Resume task" })).toBeNull();
+  expect(screen.getByRole("status").textContent).toContain(
+    "Resume unavailable",
   );
 });
