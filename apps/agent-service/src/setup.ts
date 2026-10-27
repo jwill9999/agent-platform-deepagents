@@ -117,7 +117,7 @@ export function setupRoutes(metadata: MetadataStore) {
     if (
       !body ||
       typeof body !== "object" ||
-      Object.keys(body).sort().join() !== "coding,general" ||
+      Object.keys(body).length !== 2 ||
       !("general" in body) ||
       !("coding" in body) ||
       typeof body.general !== "string" ||
