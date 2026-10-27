@@ -39,12 +39,17 @@ let initialDefaults: typeof defaults | null;
 let failPath = "";
 beforeEach(() => {
   vi.resetAllMocks();
+  window.harness = { connection: vi.fn() };
   saved = true;
   initialDefaults = null;
   failPath = "";
   mock.request.mockImplementation(
     async (path: string, method: string, body: unknown) => {
       if (path === failPath) throw new Error("Synthetic request failed");
+      if (path === "/activity/preferences")
+        return { enabled: false, theme: "system" };
+      if (path === "/activity") return { events: [], unread: 0 };
+      if (path === "/activity/session") return { session: "synthetic" };
       if (path === "/setup")
         return { saved, writable: true, defaults: initialDefaults };
       if (path === "/setup/connection") {
