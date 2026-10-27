@@ -1,13 +1,21 @@
 import { beforeEach, expect, test, vi } from "vitest";
-import { readOpenRouterApiKey } from "../packages/agent/src/credentials.js";
+import {
+  readOpenRouterApiKey,
+  saveOpenRouterApiKey,
+} from "../packages/agent/src/credentials.js";
 
-const keyring = vi.hoisted(() => ({ getPassword: vi.fn(), entries: vi.fn() }));
+const keyring = vi.hoisted(() => ({
+  getPassword: vi.fn(),
+  setPassword: vi.fn(),
+  entries: vi.fn(),
+}));
 vi.mock("@napi-rs/keyring", () => ({
   AsyncEntry: class {
     constructor(...args: unknown[]) {
       keyring.entries(...args);
     }
     getPassword = keyring.getPassword;
+    setPassword = keyring.setPassword;
   },
 }));
 beforeEach(() => {
@@ -55,4 +63,16 @@ test("missing/denied Keychain and invalid source fail without environment fallba
   await expect(readOpenRouterApiKey()).rejects.toThrow(
     /environment or keyring/,
   );
+});
+
+test("credential writes use only the selected keyring namespace and surface failure", async () => {
+  await expect(saveOpenRouterApiKey("synthetic")).rejects.toThrow(/keyring/);
+  vi.stubEnv("HARNESS_CREDENTIAL_SOURCE", "keyring");
+  await saveOpenRouterApiKey("synthetic");
+  expect(keyring.setPassword).toHaveBeenCalledWith("synthetic");
+  vi.stubEnv("HARNESS_KEYRING_SERVICE", " ");
+  await expect(saveOpenRouterApiKey("synthetic")).rejects.toThrow(/namespace/);
+  vi.stubEnv("HARNESS_KEYRING_SERVICE", "isolated-test");
+  keyring.setPassword.mockRejectedValueOnce(new Error("Denied"));
+  await expect(saveOpenRouterApiKey("synthetic")).rejects.toThrow("Denied");
 });

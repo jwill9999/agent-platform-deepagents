@@ -34,3 +34,17 @@ export async function readOpenRouterApiKey(): Promise<string> {
   }
   return apiKey;
 }
+
+/** Called only after the service has authenticated the proposed replacement. */
+export async function saveOpenRouterApiKey(apiKey: string): Promise<void> {
+  if (process.env.HARNESS_CREDENTIAL_SOURCE !== "keyring")
+    throw new Error("Saving credentials requires the keyring source.");
+  const { AsyncEntry } = await import("@napi-rs/keyring");
+  const service =
+    process.env.HARNESS_KEYRING_SERVICE ?? "agent-platform-deepagents";
+  if (!service.trim())
+    throw new Error("Credential namespace must not be empty.");
+  await new AsyncEntry(service, "openrouter", {
+    linux: { store: "secret-service" },
+  }).setPassword(apiKey);
+}

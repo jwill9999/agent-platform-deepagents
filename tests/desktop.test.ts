@@ -4,6 +4,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 // These doubles do not establish native Electron/installer acceptance.
 const e = vi.hoisted(() => ({
   whenReady: vi.fn(),
+  lock: vi.fn(),
+  ipc: vi.fn(),
   enableSandbox: vi.fn(),
   quit: vi.fn(),
   exit: vi.fn(),
@@ -21,11 +23,13 @@ const e = vi.hoisted(() => ({
 vi.mock("electron", () => ({
   app: {
     whenReady: e.whenReady,
+    requestSingleInstanceLock: e.lock,
     enableSandbox: e.enableSandbox,
     quit: e.quit,
     exit: e.exit,
     on: e.on,
   },
+  ipcMain: { handle: e.ipc },
   protocol: { registerSchemesAsPrivileged: e.register, handle: e.handle },
   session: { defaultSession: { setPermissionRequestHandler: e.permission } },
   BrowserWindow: class {
@@ -45,12 +49,13 @@ const originalArgs = [...process.argv];
 beforeEach(() => {
   vi.resetModules();
   vi.resetAllMocks();
+  e.lock.mockReturnValue(true);
   e.whenReady.mockResolvedValue(undefined);
   e.loadURL.mockResolvedValue(undefined);
   e.all.mockReturnValue([]);
   e.execute.mockResolvedValue({
-    title: "Agent Harness",
-    heading: "Agent Harness",
+    title: "Agent Platform Deep Agents",
+    heading: "Agent Platform Deep Agents",
     nodeAvailable: false,
   });
   vi.spyOn(console, "info").mockImplementation(() => {});
@@ -75,6 +80,7 @@ test("desktop denies new windows/navigation/permissions and serves only its CSP-
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        preload: expect.stringContaining("preload.cjs"),
       },
     }),
   );
@@ -88,9 +94,9 @@ test("desktop denies new windows/navigation/permissions and serves only its CSP-
   const serve = e.handle.mock.calls[0]![1];
   expect((await serve({ url: "harness://app/untrusted" })).status).toBe(404);
   const response: Response = await serve({ url: "harness://app/" });
-  expect(await response.text()).toContain("Agent Harness");
+  expect(await response.text()).toContain("Agent Platform Deep Agents");
   expect(response.headers.get("content-security-policy")).toContain(
-    "default-src 'none'",
+    "default-src 'self'",
   );
   expect(e.quit).not.toHaveBeenCalled();
 });
@@ -110,10 +116,17 @@ test.each([
   1,
   {},
   { title: "wrong" },
-  { title: "Agent Harness" },
-  { title: "Agent Harness", heading: "wrong" },
-  { title: "Agent Harness", heading: "Agent Harness" },
-  { title: "Agent Harness", heading: "Agent Harness", nodeAvailable: true },
+  { title: "Agent Platform Deep Agents" },
+  { title: "Agent Platform Deep Agents", heading: "wrong" },
+  {
+    title: "Agent Platform Deep Agents",
+    heading: "Agent Platform Deep Agents",
+  },
+  {
+    title: "Agent Platform Deep Agents",
+    heading: "Agent Platform Deep Agents",
+    nodeAvailable: true,
+  },
 ])("invalid smoke result fails closed: %j", async (result) => {
   e.execute.mockResolvedValue(result);
   await start(true);
@@ -147,4 +160,28 @@ test("activation opens a missing window, retains existing windows, and reports l
   vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
   closed();
   expect(e.quit).toHaveBeenCalledOnce();
+});
+
+test("IPC exposes only configured local connection to the trusted main frame", async () => {
+  await start();
+  const handler = e.ipc.mock.calls[0]![1];
+  expect(() =>
+    handler({ senderFrame: { url: "https://untrusted.invalid" } }),
+  ).toThrow("Untrusted");
+  vi.stubEnv("HARNESS_SERVICE_TOKEN", "");
+  expect(() => handler({ senderFrame: { url: "harness://app/" } })).toThrow(
+    "not configured",
+  );
+  vi.stubEnv(
+    "HARNESS_SERVICE_TOKEN",
+    "synthetic-long-token-for-local-service-only",
+  );
+  expect(handler({ senderFrame: { url: "harness://app/" } })).toEqual({
+    url: "http://127.0.0.1:2024",
+    token: "synthetic-long-token-for-local-service-only",
+  });
+  const serve = e.handle.mock.calls[0]![1];
+  expect((await serve({ url: "harness://app/assets/missing.js" })).status).toBe(
+    404,
+  );
 });

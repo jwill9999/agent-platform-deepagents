@@ -2,7 +2,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.{ts,tsx}"],
     fileParallelism: false,
     maxWorkers: 1,
     testTimeout: 15000,
@@ -10,7 +10,7 @@ export default defineConfig({
     unstubEnvs: true,
     coverage: {
       provider: "v8",
-      include: ["apps/*/src/**/*.ts", "packages/*/src/**/*.ts"],
+      include: ["apps/*/src/**/*.{ts,tsx,cts}", "packages/*/src/**/*.ts"],
       reporter: ["text", "lcov", "json-summary"],
       reportsDirectory: process.env.HARNESS_COVERAGE_DIR ?? "coverage",
       thresholds: {

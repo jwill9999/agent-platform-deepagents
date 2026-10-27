@@ -4,13 +4,29 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json && vite build --config vite.preload.config.ts && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json",
     "start": "electron .",
     "smoke": "electron . --scaffold-smoke"
   },
   "main": "dist/main.js",
   "devDependencies": {
-    "electron": "45.0.0"
+    "@tailwindcss/vite": "4.3.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "electron": "45.0.0",
+    "tailwindcss": "4.3.3",
+    "vite": "8.3.5"
+  },
+  "dependencies": {
+    "@fontsource/geist": "5.3.0",
+    "@langchain/langgraph-sdk": "1.12.7",
+    "@radix-ui/react-slot": "1.5.0",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tailwind-merge": "3.7.0"
   }
 }

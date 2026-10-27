@@ -2,6 +2,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 const s = vi.hoisted(() => ({
   serve: vi.fn(),
+  factory: vi.fn(),
+  getRun: vi.fn(),
+  finishRun: vi.fn(),
   app: vi.fn(),
   open: vi.fn(),
   close: vi.fn(),
@@ -9,6 +12,7 @@ const s = vi.hoisted(() => ({
   connections: vi.fn(),
   serverOnce: vi.fn(),
 }));
+vi.mock("@harness/agent", () => ({ createServiceAgent: s.factory }));
 vi.mock("@hono/node-server", () => ({ serve: s.serve }));
 vi.mock("../apps/agent-service/src/app.js", () => ({
   createServiceApp: s.app,
@@ -40,7 +44,11 @@ beforeEach(() => {
     signals.set(name, fn);
     return process;
   }) as typeof process.once);
-  s.open.mockReturnValue({ close: s.close });
+  s.factory.mockResolvedValue({ graph: {} });
+  s.open.mockReturnValue({
+    close: s.close,
+    metadata: { getRun: s.getRun, finishRun: s.finishRun },
+  });
   s.app.mockReturnValue({ fetch: vi.fn() });
   s.serverClose.mockImplementation((callback: () => void) => callback());
   s.serve.mockReturnValue({
@@ -105,3 +113,17 @@ test.each(["HARNESS_DATA_DIR", "HARNESS_SERVICE_TOKEN"])(
     expect(s.serve).not.toHaveBeenCalled();
   },
 );
+
+test("model failure callback records only a running admission and preserves terminal outcomes", async () => {
+  await start();
+  await vi.waitFor(() => expect(s.serve).toHaveBeenCalled());
+  const failed = s.factory.mock.calls[0]![0];
+  s.getRun.mockReturnValue({ status: "running" });
+  failed("run");
+  expect(s.finishRun).toHaveBeenCalledWith("run", "error");
+  s.getRun.mockReturnValue({ status: "error" });
+  failed("run");
+  s.getRun.mockReturnValue(undefined);
+  failed("missing");
+  expect(s.finishRun).toHaveBeenCalledOnce();
+});
