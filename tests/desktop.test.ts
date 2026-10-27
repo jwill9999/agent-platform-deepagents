@@ -164,7 +164,9 @@ test("activation opens a missing window, retains existing windows, and reports l
 
 test("IPC exposes only configured local connection to the trusted main frame", async () => {
   await start();
-  const handler = e.ipc.mock.calls[0]![1];
+  const handler = e.ipc.mock.calls.find(
+    ([name]) => name === "harness:connection",
+  )![1];
   expect(() =>
     handler({ senderFrame: { url: "https://untrusted.invalid" } }),
   ).toThrow("Untrusted");
