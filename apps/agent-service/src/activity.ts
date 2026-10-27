@@ -156,7 +156,9 @@ export function activityRoutes(store: ActivityStore) {
     const b: unknown = await c.req.json();
     if (
       !record(b) ||
-      Object.keys(b).sort().join() !== "enabled,theme" ||
+      Object.keys(b).length !== 2 ||
+      !Object.hasOwn(b, "enabled") ||
+      !Object.hasOwn(b, "theme") ||
       typeof b.enabled !== "boolean" ||
       typeof b.theme !== "string" ||
       !["system", "light", "dark"].includes(b.theme)

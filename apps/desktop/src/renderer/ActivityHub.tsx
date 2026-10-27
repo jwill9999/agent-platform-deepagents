@@ -22,12 +22,12 @@ export function ActivityHub({
   view,
   onOpen,
   onUnread,
-}: {
+}: Readonly<{
   api: Api;
   view: "chat" | "inbox" | "preferences";
   onOpen: (event: Activity | null) => Promise<void>;
   onUnread: (count: number) => void;
-}) {
+}>) {
   const [events, setEvents] = useState<Activity[]>([]),
     [preferences, setPreferences] = useState<Preferences>(),
     [error, setError] = useState(""),
@@ -84,6 +84,12 @@ export function ActivityHub({
         }
       })();
     });
+    async function notify(sessionId: string, enabled: boolean) {
+      if (!enabled || !window.harness.notify) return;
+      const result = await window.harness.notify(sessionId);
+      if (active && result === "unavailable") setStatus(result);
+      if (result === "superseded") session.current = null;
+    }
     async function poll() {
       try {
         if (saving.current) return;
@@ -104,11 +110,7 @@ export function ActivityHub({
           session.current = next.session;
         }
         if (!active || version !== preferenceVersion.current) return;
-        if (prefs.enabled && window.harness.notify) {
-          const result = await window.harness.notify(session.current);
-          if (active && result === "unavailable") setStatus(result);
-          if (result === "superseded") session.current = null;
-        }
+        await notify(session.current, prefs.enabled);
         if (active) setOffline(false);
       } catch {
         session.current = null;
@@ -177,6 +179,53 @@ export function ActivityHub({
       setBusy(false);
     }
   }
+  function renderEvents() {
+    if (!loaded) return <output>Loading activity…</output>;
+    if (events.length === 0)
+      return (
+        <p>
+          No activity yet. Completion, failure and required decisions will
+          appear here.
+        </p>
+      );
+    return events.map((event) => (
+      <article className="activity-event" key={event.id}>
+        <h2>
+          {titles[event.kind] ?? "Activity update"} ·{" "}
+          {event.read_at === null ? "Unread" : "Read"}
+        </h2>
+        <p className="footnote">
+          {new Date(event.created_at).toLocaleString()} · Task{" "}
+          {event.task_id.slice(0, 8)}
+        </p>
+        <p>{eventDescription(event.kind)}</p>
+        <div className="activity-actions">
+          <Button
+            disabled={busy}
+            onClick={() =>
+              void open.current(event).catch(async () => {
+                await open.current(null);
+                setError(
+                  "Conversation unavailable. This event remains in your inbox.",
+                );
+              })
+            }
+          >
+            {event.kind === "decision"
+              ? "Review decision"
+              : "Open conversation"}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={busy || event.read_at !== null || offline}
+            onClick={() => void read(event.id)}
+          >
+            Mark read
+          </Button>
+        </div>
+      </article>
+    ));
+  }
   return (
     <section
       className="activity-panel"
@@ -200,7 +249,7 @@ export function ActivityHub({
       {view === "preferences" ? (
         <>
           {!preferences ? (
-            <p role="status">Loading preferences…</p>
+            <output>Loading preferences…</output>
           ) : (
             <>
               <fieldset disabled={busy}>
@@ -228,21 +277,17 @@ export function ActivityHub({
                       void save({ ...preferences, enabled: e.target.checked })
                     }
                   />
-                  Enable notifications for new activity
+                  <span>Enable notifications for new activity</span>
                 </label>
                 <p>
                   The inbox always retains activity. Banners are requested only
                   while this window is connected; older events are not replayed
                   on reconnect or enable.
                 </p>
-                <p className="footnote" role="status">
-                  {status === "shown"
-                    ? "macOS reported a notification shown."
-                    : status === "unavailable"
-                      ? "Notification could not be shown. Your inbox remains available."
-                      : "macOS controls permission and Focus. Delivery status is unknown."}{" "}
-                  App opt-in does not confirm system permission.
-                </p>
+                <output className="footnote">
+                  {notificationDescription(status)} App opt-in does not confirm
+                  system permission.
+                </output>
                 <Button
                   variant="outline"
                   disabled={
@@ -264,64 +309,13 @@ export function ActivityHub({
                   Send test notification
                 </Button>
               </fieldset>
-              {busy && <p role="status">Saving or requesting notification…</p>}
+              {busy && <output>Saving or requesting notification…</output>}
             </>
           )}
         </>
       ) : (
         <>
-          {!loaded ? (
-            <p role="status">Loading activity…</p>
-          ) : events.length === 0 ? (
-            <p>
-              No activity yet. Completion, failure and required decisions will
-              appear here.
-            </p>
-          ) : (
-            events.map((event) => (
-              <article className="activity-event" key={event.id}>
-                <h2>
-                  {titles[event.kind] ?? "Activity update"} ·{" "}
-                  {event.read_at === null ? "Unread" : "Read"}
-                </h2>
-                <p className="footnote">
-                  {new Date(event.created_at).toLocaleString()} · Task{" "}
-                  {event.task_id.slice(0, 8)}
-                </p>
-                <p>
-                  {event.kind === "completed"
-                    ? "Execution finished. Billing may still need confirmation."
-                    : event.kind === "decision"
-                      ? "Open the conversation to review the current decision. This event may have been resolved."
-                      : "Open the conversation for the current state. No automatic replacement task was started."}
-                </p>
-                <div className="activity-actions">
-                  <Button
-                    disabled={busy}
-                    onClick={() =>
-                      void open.current(event).catch(async () => {
-                        await open.current(null);
-                        setError(
-                          "Conversation unavailable. This event remains in your inbox.",
-                        );
-                      })
-                    }
-                  >
-                    {event.kind === "decision"
-                      ? "Review decision"
-                      : "Open conversation"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    disabled={busy || event.read_at !== null || offline}
-                    onClick={() => void read(event.id)}
-                  >
-                    Mark read
-                  </Button>
-                </div>
-              </article>
-            ))
-          )}
+          {renderEvents()}
           {before.current !== null && (
             <Button
               variant="outline"
@@ -352,4 +346,18 @@ export function ActivityHub({
       )}
     </section>
   );
+}
+
+function notificationDescription(status: string) {
+  if (status === "shown") return "macOS reported a notification shown.";
+  if (status === "unavailable")
+    return "Notification could not be shown. Your inbox remains available.";
+  return "macOS controls permission and Focus. Delivery status is unknown.";
+}
+function eventDescription(kind: string) {
+  if (kind === "completed")
+    return "Execution finished. Billing may still need confirmation.";
+  if (kind === "decision")
+    return "Open the conversation to review the current decision. This event may have been resolved.";
+  return "Open the conversation for the current state. No automatic replacement task was started.";
 }

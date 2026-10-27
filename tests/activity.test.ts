@@ -105,6 +105,8 @@ test("inbox API validates cursors, IDs, preferences and session bodies without a
     [],
     {},
     { enabled: "yes", theme: "dark" },
+    { enabled: false, extra: true },
+    { theme: "dark", extra: true },
     { enabled: true, theme: ["dark"] },
     { enabled: true, theme: "other" },
     { enabled: true, theme: "dark", extra: true },
@@ -114,7 +116,7 @@ test("inbox API validates cursors, IDs, preferences and session bodies without a
     (
       await req(
         "/activity/preferences",
-        { enabled: true, theme: "dark" },
+        { theme: "dark", enabled: true },
         "PUT",
       )
     ).status,

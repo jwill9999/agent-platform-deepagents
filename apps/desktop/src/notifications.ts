@@ -9,6 +9,23 @@ const labels: Record<string, string> = {
   interrupted: "Task interrupted",
   decision: "Decision required",
 };
+async function service(path: string, body?: unknown) {
+  const token = process.env.HARNESS_SERVICE_TOKEN;
+  if (!token || !/^[A-Za-z0-9_-]{32,}$/.test(token))
+    throw new Error("Connection unavailable");
+  const response = await fetch("http://127.0.0.1:2024" + path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error("Activity connection unavailable");
+  return response.json();
+}
+
 /** Narrow desktop adapter: no agent execution, provider key or arbitrary URLs. */
 export function registerNotifications() {
   const retained = new Set<Notification>();
@@ -30,22 +47,6 @@ export function registerNotifications() {
       });
     }
     return window;
-  }
-  async function service(path: string, body?: unknown) {
-    const token = process.env.HARNESS_SERVICE_TOKEN;
-    if (!token || !/^[A-Za-z0-9_-]{32,}$/.test(token))
-      throw new Error("Connection unavailable");
-    const response = await fetch("http://127.0.0.1:2024" + path, {
-      method: body === undefined ? "GET" : "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!response.ok) throw new Error("Activity connection unavailable");
-    return response.json();
   }
   function show(window: BrowserWindow, event?: Event) {
     if (!Notification.isSupported()) return "unavailable";
