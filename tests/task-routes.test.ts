@@ -102,3 +102,29 @@ test("accounting never dispatches; unknown stays reserved and stale/rapid reques
   });
   expect(billing.cost).toHaveBeenCalledTimes(2);
 });
+
+test("Resume validates revision and keeps unavailable service details private", async () => {
+  for (const body of [
+    null,
+    [],
+    {},
+    { revision: 1.5 },
+    { revision: 1, extra: true },
+  ])
+    expect((await req("/tasks/missing/resume", body)).status).toBe(400);
+  expect((await req("/tasks/missing/resume", { revision: 1 })).status).toBe(
+    409,
+  );
+  const resume = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("private checkpoint detail"))
+    .mockResolvedValue({ id: "task", state: "queued" });
+  app = taskRoutes(p.tasks, p.metadata, undefined, {
+    resume,
+  } as unknown as NonNullable<Parameters<typeof taskRoutes>[3]>);
+  const failed = await req("/tasks/task/resume", { revision: 2 });
+  expect(failed.status).toBe(409);
+  expect(await failed.text()).not.toContain("private checkpoint");
+  expect((await req("/tasks/task/resume", { revision: 2 })).status).toBe(200);
+  expect(resume).toHaveBeenLastCalledWith("task", 2);
+});

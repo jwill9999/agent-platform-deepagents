@@ -115,6 +115,7 @@ test("restart never replays queued/running work or mistakes late accounting for 
     b = await submit(),
     l = store.tasks,
     run = l.admit(a.id, 0, 40)!;
+  l.beginProviderAttempt(run.attempt_id!);
   l.recordGeneration(a.id, run.attempt_id!, "gen-restart");
   store.close();
   store = openPersistence(fixture.path);
@@ -125,13 +126,13 @@ test("restart never replays queued/running work or mistakes late accounting for 
     store.tasks.reconcile(a.id, r.attempt_id!, r.revision, 2),
   ).toMatchObject({ state: "interrupted", reserved: 0, confirmed: 2 });
 });
-test("expiry excludes attached queues; pricing failures are terminal and known failed outcomes stay failed after reconciliation", async () => {
+test("queued failures are terminal and known failed outcomes stay failed after reconciliation", async () => {
   const a = await submit(),
     b = await submit(),
     c = await submit(),
     l = store.tasks;
   vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31000);
-  l.expireUnattached(new Set([b.id, c.id]));
+  l.interruptQueued(a.id);
   expect(l.get(a.id).state).toBe("interrupted");
   expect(l.get(b.id).state).toBe("queued");
   l.failQueued(b.id);
@@ -140,4 +141,135 @@ test("expiry excludes attached queues; pricing failures are terminal and known f
   const r = l.admit(c.id, 0, 4)!;
   const u = l.settle(c.id, r.attempt_id!, r.revision, null, false);
   expect(l.reconcile(c.id, r.attempt_id!, u.revision, 0).state).toBe("failed");
+});
+
+test("Resume archives the prior attempt and cannot be altered by stale Stop, accounting or decisions", async () => {
+  const t = await submit(),
+    l = store.tasks;
+  const first = l.admit(t.id, 0, 30)!;
+  l.beginProviderAttempt(first.attempt_id!);
+  l.recordGeneration(t.id, first.attempt_id!, "gen-first");
+  l.interruptOnRestart();
+  const interrupted = l.get(t.id);
+  expect(() => l.resume(t.id, interrupted.revision, "checkpoint")).toThrow(
+    "unresolved",
+  );
+  const settled = l.reconcile(t.id, first.attempt_id!, interrupted.revision, 3);
+  const resumed = l.resume(t.id, settled.revision, "checkpoint");
+  expect(l.resume(t.id, settled.revision, "checkpoint")).toEqual(resumed);
+  expect(resumed).toMatchObject({
+    confirmed: 3,
+    allowance: 100,
+    attempt_id: null,
+    provider_attempts: 0,
+    resume_mode: "checkpoint",
+  });
+  const next = l.admit(t.id, resumed.revision, 30)!;
+  expect(next.attempt_id).not.toBe(first.attempt_id);
+  expect(() =>
+    l.requestStop(t.id, first.attempt_id!, first.revision),
+  ).toThrow();
+  expect(() =>
+    l.reconcile(t.id, first.attempt_id!, settled.revision, 3),
+  ).toThrow();
+  expect(() =>
+    l.decide(t.id, "old-decision", first.revision, true, 200),
+  ).toThrow();
+  expect(l.get(t.id)).toEqual(next);
+  const { default: Database } = await import("better-sqlite3");
+  const db = new Database(fixture.path + "/metadata.sqlite");
+  try {
+    const rows = db
+      .prepare("SELECT previous_attempt FROM task_resumes WHERE task_id=?")
+      .all(t.id) as { previous_attempt: string }[];
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.previous_attempt)).toMatchObject({
+      attempt_id: first.attempt_id!,
+      confirmed: 3,
+      generation_id: "gen-first",
+    });
+  } finally {
+    db.close();
+  }
+});
+test("legacy attempted work stays blocked; safe legacy queue adoption gains deterministic identity", async () => {
+  const { default: Database } = await import("better-sqlite3");
+  const db = new Database(fixture.path + "/metadata.sqlite");
+  try {
+    const attempted = await submit(),
+      queued = await submit();
+    const a = store.tasks.admit(attempted.id, 0, 10)!;
+    db.prepare("UPDATE tasks SET input_identity_version=0").run();
+    store.tasks.interruptOnRestart();
+    expect(() =>
+      store.tasks.resume(a.id, store.tasks.get(a.id).revision, "input"),
+    ).toThrow("Legacy");
+    const q = store.tasks.get(queued.id);
+    const adopted = store.tasks.resume(q.id, q.revision, "input");
+    expect(adopted.input_identity_version).toBe(1);
+    const next = store.tasks.admit(q.id, adopted.revision, 10)!;
+    store.tasks.interruptOnRestart();
+    const again = store.tasks.get(next.id);
+    expect(() =>
+      store.tasks.assertResumable(again, again.revision),
+    ).not.toThrow();
+    expect(() => store.tasks.resume(q.id, 0, "input")).toThrow("cannot resume");
+    db.prepare("UPDATE tasks SET confirmed=allowance+1 WHERE id=?").run(q.id);
+    const over = store.tasks.get(q.id);
+    expect(() => store.tasks.assertResumable(over, over.revision)).toThrow(
+      "exceeded",
+    );
+  } finally {
+    db.close();
+  }
+});
+test("restart preserves stopped intent and unsettled provider evidence", async () => {
+  const t = await submit(),
+    l = store.tasks,
+    r = l.admit(t.id, 0, 10)!;
+  l.beginProviderAttempt(r.attempt_id!);
+  l.requestStop(t.id, r.attempt_id!, r.revision);
+  l.interruptOnRestart();
+  expect(l.get(t.id)).toMatchObject({
+    state: "stopped",
+    reserved: 10,
+    attempt_settled: 0,
+  });
+  expect(() => l.resume(t.id, l.get(t.id).revision, "checkpoint")).toThrow();
+  expect(
+    store.activity
+      .list(Number.MAX_SAFE_INTEGER)
+      .events.filter((e) => e.kind === "stopped"),
+  ).toHaveLength(1);
+});
+
+// Practical standalone zero-price checks passed before these regressions.
+test("zero quote cannot settle a dispatched charge or permit interrupted Resume", async () => {
+  const t = await submit(),
+    l = store.tasks,
+    a = l.admit(t.id, 0, 0)!;
+  expect(l.knownUncharged(a.attempt_id!)).toBe(true);
+  l.beginProviderAttempt(a.attempt_id!);
+  expect(l.knownUncharged(a.attempt_id!)).toBe(false);
+  l.recordGeneration(t.id, a.attempt_id!, "gen-zero");
+  l.interruptOnRestart();
+  const interrupted = l.get(t.id);
+  expect(interrupted).toMatchObject({ reserved: 0, attempt_settled: 0 });
+  expect(() => l.resume(t.id, interrupted.revision, "checkpoint")).toThrow(
+    "unresolved",
+  );
+  const confirmed = l.reconcile(t.id, a.attempt_id!, interrupted.revision, 0);
+  expect(l.resume(t.id, confirmed.revision, "checkpoint").state).toBe("queued");
+});
+test("positive no-send evidence remains uncharged across restart", async () => {
+  const t = await submit(),
+    l = store.tasks,
+    a = l.admit(t.id, 0, 0)!;
+  l.beginProviderAttempt(a.attempt_id!);
+  expect(l.rejectBeforeDispatch(a.attempt_id!)).toBe(true);
+  expect(l.knownUncharged(a.attempt_id!)).toBe(true);
+  l.interruptOnRestart();
+  const interrupted = l.get(t.id);
+  expect(interrupted.attempt_settled).toBe(1);
+  expect(() => l.resume(t.id, interrupted.revision, "input")).not.toThrow();
 });

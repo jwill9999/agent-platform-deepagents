@@ -76,13 +76,14 @@ beforeEach(async () => {
     ),
   );
 });
-afterEach(() =>
+afterEach(async () => {
+  await app.close();
   cleanUp([
     () => persistence.close(),
     () => fixture.remove(),
     () => vi.unstubAllGlobals(),
-  ]),
-);
+  ]);
+});
 async function request(path: string, body?: unknown, method = "POST") {
   return app.request(path, {
     method,
@@ -97,17 +98,23 @@ async function newChat() {
   });
   return (await request("/threads", {})).json();
 }
-function run(id: string, extra = {}) {
-  const previous = persistence.tasks.list().findLast((t) => t.thread_id === id);
-  const task =
-    previous && ["queued", "running", "uncertain"].includes(previous.state)
-      ? previous
-      : persistence.tasks.submit(randomUUID(), id, "hello", 1000);
-  return request(`/threads/${id}/runs/stream`, {
-    assistant_id: "general-chat",
-    metadata: { task_id: task.id },
-    ...extra,
+async function run(id: string, allowance = "0.000001") {
+  return request("/tasks", {
+    id: randomUUID(),
+    threadId: id,
+    instruction: "hello",
+    allowanceUsd: allowance,
   });
+}
+async function finished(id: string) {
+  await vi.waitFor(
+    () =>
+      expect(persistence.tasks.get(id).state).not.toMatch(
+        /^(queued|running|stopping)$/,
+      ),
+    { timeout: 6000 },
+  );
+  return persistence.tasks.get(id);
 }
 
 test("setup reports availability; authenticates without generation; validates and preserves defaults", async () => {
@@ -209,7 +216,9 @@ test("new chats pin defaults; browser boundary and all client policy overrides a
     { input: { messages: [{ type: "human", content: " " }] } },
     { input: { messages: [{ type: "human", content: "x".repeat(8001) }] } },
   ])
-    expect((await run(thread.thread_id, extra)).status).toBe(400);
+    expect(
+      (await request(`/threads/${thread.thread_id}/runs/stream`, extra)).status,
+    ).toBe(404);
   const accepted = await app.request("/ok", {
     headers: { ...headers, Origin: "harness://app" },
   });
@@ -225,29 +234,27 @@ test("new chats pin defaults; browser boundary and all client policy overrides a
     kind: "patch",
     metadata: { model: null },
   });
-  expect((await run(thread.thread_id)).status).toBe(409);
+  const invalid = await (await run(thread.thread_id)).json();
+  expect((await finished(invalid.id)).state).toBe("failed");
 });
-test("checkpoint failure retains uncertain reservation; separate chat can still run", async () => {
+test("checkpoint failure is uncharged before provider dispatch; another chat can run", async () => {
   const thread = await newChat();
   const get = vi
     .spyOn(persistence.checkpointer, "getTuple")
     .mockRejectedValue(new Error("Synthetic checkpoint fault"));
-  const response = await run(thread.thread_id);
-  expect(await response.text()).toContain("event: error");
-  const saved = await persistence.metadata.get(thread.thread_id);
-  expect(
-    persistence.metadata.getRun(String(saved.metadata.admission_id))?.status,
-  ).toBe("error");
+  const submitted = await (await run(thread.thread_id)).json();
+  const failed = await finished(submitted.id);
+  expect(failed).toMatchObject({
+    state: "failed",
+    reserved: 0,
+    provider_attempts: 0,
+  });
+  expect(persistence.metadata.getRun(failed.attempt_id!)?.status).toBe("error");
   get.mockRestore();
-  vi.mocked(fetch).mockRejectedValue(new Error("sensitive provider details"));
-  expect((await run(thread.thread_id)).status).toBe(409);
-  expect(persistence.tasks.list().at(-1)?.reserved).toBe(100);
-  const separate = await newChat();
-  const again = await run(separate.thread_id);
-  expect(again.status).toBe(200);
-  const body = await again.text();
-  expect(body).toContain("model could not complete");
-  expect(body).not.toContain("sensitive provider details");
+  vi.mocked(fetch).mockRejectedValue(new Error("private provider detail"));
+  const other = await newChat();
+  const next = await (await run(other.thread_id)).json();
+  expect((await finished(next.id)).state).toBe("uncertain");
 });
 test("admission spans stream lifetime; success uses pinned model and no tools", async () => {
   const thread = await newChat();
@@ -286,11 +293,11 @@ test("admission spans stream lifetime; success uses pinned model and no tools", 
       { headers: { "Content-Type": "text/event-stream" } },
     );
   });
-  const response = await run(thread.thread_id);
+  const submitted = await (await run(thread.thread_id)).json();
   await entering;
   expect((await run(thread.thread_id)).status).toBe(409);
   release();
-  expect(await response.text()).toContain("Synthetic reply");
+  expect((await finished(submitted.id)).partial_text).toBe("Synthetic reply");
   const saved = await persistence.metadata.get(thread.thread_id);
   expect(
     persistence.metadata.getRun(String(saved.metadata.admission_id))?.status,
@@ -298,86 +305,39 @@ test("admission spans stream lifetime; success uses pinned model and no tools", 
   expect(fetch).toHaveBeenCalledOnce();
 });
 
-test("admission storage failures return generic errors and release the unfinished slot", async () => {
-  const thread = await newChat();
-  const original = persistence.metadata.set.bind(persistence.metadata);
-  vi.spyOn(persistence.metadata, "set").mockRejectedValueOnce(
-    new Error("private storage detail"),
-  );
-  const result = await run(thread.thread_id);
-  expect(result.status).toBe(502);
-  expect(await result.text()).not.toContain("private storage detail");
-  // No graph was dispatched, so the failed task has no reservation.
-  vi.mocked(fetch).mockRejectedValue(new Error("synthetic"));
-  expect(
-    persistence.tasks.list().findLast((t) => t.thread_id === thread.thread_id),
-  ).toMatchObject({ state: "failed", reserved: 0 });
-  const separate = await newChat();
-  const next = await run(separate.thread_id);
-  expect(next.status).toBe(200);
-  await next.text();
-  await original("invalid-framework-id", {
-    kind: "put",
-    metadata: { model: "test/general" },
-  });
-  expect((await run("invalid-framework-id")).status).toBe(502);
-});
-
-test("zero allowance asks before dispatch; absent task and abandoned waiting requests do not occupy capacity", async () => {
-  const thread = await newChat();
-  const t = persistence.tasks.submit(randomUUID(), thread.thread_id, "zero", 0);
-  expect((await run(thread.thread_id)).status).toBe(409);
-  expect(persistence.tasks.get(t.id).state).toBe("awaiting_approval");
-  expect(fetch).not.toHaveBeenCalled();
-  expect(
-    (
-      await request(`/threads/${thread.thread_id}/runs/stream`, {
-        assistant_id: "general-chat",
-        metadata: { task_id: "absent" },
-      })
-    ).status,
-  ).toBe(404);
-  const first = await newChat();
-  persistence.tasks.submit(randomUUID(), first.thread_id, "head", 1000);
-  const second = await newChat();
-  const queued = persistence.tasks.submit(
-    randomUUID(),
-    second.thread_id,
-    "waiting",
-    1000,
-  );
-  const controller = new AbortController();
-  const waiting = app.request(`/threads/${second.thread_id}/runs/stream`, {
-    method: "POST",
-    headers,
-    signal: controller.signal,
-    body: JSON.stringify({
-      assistant_id: "general-chat",
-      metadata: { task_id: queued.id },
-    }),
-  });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  controller.abort();
-  expect((await waiting).status).toBe(409);
-  expect(persistence.tasks.get(queued.id).state).toBe("interrupted");
-});
-test("pricing outage and run-record failure cannot dispatch or leak a reservation", async () => {
+test("storage and pricing faults never leak reservations or private errors", async () => {
   const { quoteModel } =
     await import("../apps/agent-service/src/accounting.js");
   const thread = await newChat();
-  vi.mocked(quoteModel).mockRejectedValueOnce(new Error("unpriced"));
-  expect((await run(thread.thread_id)).status).toBe(409);
-  expect(persistence.tasks.list().at(-1)?.state).toBe("failed");
+  vi.mocked(quoteModel).mockRejectedValueOnce(new Error("private pricing"));
+  const first = await (await run(thread.thread_id)).json();
+  expect((await finished(first.id)).state).toBe("failed");
   expect(fetch).not.toHaveBeenCalled();
   vi.spyOn(persistence.metadata, "createRun").mockImplementationOnce(() => {
-    throw new Error("storage");
+    throw new Error("private storage");
   });
-  expect((await run(thread.thread_id)).status).toBe(409);
-  expect(persistence.tasks.list().at(-1)).toMatchObject({
+  const second = await (await run(thread.thread_id)).json();
+  expect(await finished(second.id)).toMatchObject({
     state: "failed",
     reserved: 0,
-    confirmed: 0,
   });
+  vi.spyOn(persistence.metadata, "set").mockRejectedValueOnce(
+    new Error("private write"),
+  );
+  const third = await (await run(thread.thread_id)).json();
+  expect(await finished(third.id)).toMatchObject({
+    state: "failed",
+    reserved: 0,
+  });
+});
+test("zero allowance pauses service-owned work before dispatch; raw streams cannot bypass admission", async () => {
+  const thread = await newChat();
+  const task = await (await run(thread.thread_id, "0")).json();
+  expect((await finished(task.id)).state).toBe("awaiting_approval");
+  expect(fetch).not.toHaveBeenCalled();
+  expect(
+    (await request(`/threads/${thread.thread_id}/runs/stream`, {})).status,
+  ).toBe(404);
 });
 test("service factory standalone configuration preserves no-fallback policy", async () => {
   const agent = await createServiceAgent(() => {});
@@ -434,8 +394,8 @@ test("native retry configuration recognises wrapped preconnection failures and r
       { headers: { "Content-Type": "text/event-stream" } },
     );
   });
-  const response = await run(thread.thread_id);
-  expect(await response.text()).toContain("Recovered");
+  const submitted = await (await run(thread.thread_id)).json();
+  expect((await finished(submitted.id)).partial_text).toBe("Recovered");
   expect(attempts).toBe(3);
   expect(persistence.tasks.list().at(-1)).toMatchObject({
     state: "completed",

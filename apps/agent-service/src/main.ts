@@ -34,13 +34,13 @@ async function main() {
       port: 2024,
     });
     let closing = false;
-    const stop = () => {
+    const stop = async () => {
       if (closing) return;
       closing = true;
-      server.close(() => {
-        persistence.close();
-      });
+      server.close();
       if ("closeAllConnections" in server) server.closeAllConnections();
+      await app.close();
+      persistence.close();
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);

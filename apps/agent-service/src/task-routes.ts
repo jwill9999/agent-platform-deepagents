@@ -1,3 +1,4 @@
+import type { TaskLifecycle } from "./task-lifecycle.js";
 import { Hono } from "hono";
 import type { MetadataStore } from "./metadata.js";
 import type { TaskLedger } from "./task-ledger.js";
@@ -12,8 +13,32 @@ export function taskRoutes(
   tasks: TaskLedger,
   metadata: MetadataStore,
   execution?: ExecutionControl,
+  lifecycle?: TaskLifecycle,
 ) {
   const app = new Hono();
+  app.post("/tasks/:id/resume", async (c) => {
+    const body: unknown = await c.req.json();
+    if (
+      !object(body) ||
+      Object.keys(body).join() !== "revision" ||
+      !Number.isSafeInteger(body.revision)
+    )
+      return c.json({ error: "Supply current task revision" }, 400);
+    try {
+      if (!lifecycle) throw new Error("Execution unavailable");
+      return c.json(
+        await lifecycle.resume(c.req.param("id"), body.revision as number),
+      );
+    } catch {
+      return c.json(
+        {
+          error:
+            "Resume unavailable: refresh task state and resolve earlier accounting or connection problems.",
+        },
+        409,
+      );
+    }
+  });
   app.get("/tasks", (c) => c.json(tasks.list()));
   app.post("/tasks/:id/stop", async (c) => {
     const body: unknown = await c.req.json();
@@ -61,14 +86,14 @@ export function taskRoutes(
       );
     await metadata.get(body.threadId);
     try {
-      return c.json(
-        tasks.submit(
-          body.id,
-          body.threadId,
-          body.instruction,
-          usdToNanos(body.allowanceUsd),
-        ),
+      const result = tasks.submit(
+        body.id,
+        body.threadId,
+        body.instruction,
+        usdToNanos(body.allowanceUsd),
       );
+      lifecycle?.kick();
+      return c.json(result);
     } catch {
       return c.json(
         { error: "Invalid or conflicting task. Existing work is unchanged." },
@@ -91,15 +116,15 @@ export function taskRoutes(
     )
       return c.json({ error: "Invalid allowance decision" }, 400);
     try {
-      return c.json(
-        tasks.decide(
-          c.req.param("id"),
-          body.decisionId,
-          body.revision as number,
-          body.approved,
-          usdToNanos(body.allowanceUsd),
-        ),
+      const result = tasks.decide(
+        c.req.param("id"),
+        body.decisionId,
+        body.revision as number,
+        body.approved,
+        usdToNanos(body.allowanceUsd),
       );
+      lifecycle?.kick();
+      return c.json(result);
     } catch {
       return c.json(
         {

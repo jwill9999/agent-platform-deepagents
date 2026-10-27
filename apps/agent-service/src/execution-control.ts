@@ -7,6 +7,7 @@ export class ExecutionControl implements ExecutionPolicy {
     string,
     {
       controller: AbortController;
+      started: boolean;
       pending: Promise<void> | null;
       resolve: (() => void) | null;
       graphDone: Promise<void>;
@@ -24,8 +25,12 @@ export class ExecutionControl implements ExecutionPolicy {
       tags?: string[],
     ) => {
       const tag = tags?.find((value) => value.startsWith("task-execution:"));
-      if (!parent && tag)
-        this.roots.set(root, tag.slice("task-execution:".length));
+      if (!parent && tag) {
+        const run = tag.slice("task-execution:".length);
+        this.roots.set(root, run);
+        const entry = this.active.get(run);
+        if (entry) entry.started = true;
+      }
     },
     handleChainEnd: (_outputs: unknown, root: string) => this.graphEnded(root),
     handleChainError: (_error: unknown, root: string) => this.graphEnded(root),
@@ -46,6 +51,7 @@ export class ExecutionControl implements ExecutionPolicy {
     });
     this.active.set(run, {
       controller,
+      started: false,
       pending: null,
       resolve: null,
       graphDone,
@@ -87,7 +93,11 @@ export class ExecutionControl implements ExecutionPolicy {
   }
   async drained(run: string) {
     const entry = this.active.get(run);
-    if (entry) await Promise.all([entry.pending, entry.graphDone]);
+    if (entry)
+      await Promise.all([
+        entry.pending,
+        entry.started ? entry.graphDone : null,
+      ]);
   }
   release(run: string) {
     this.active.delete(run);
