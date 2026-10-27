@@ -1,6 +1,6 @@
 # agent-platform-deepagents
 
-Electron and Deep Agents TypeScript development pilot. M1-02 delivers OpenRouter setup and durable General Chat, merged into staging through PR #11. See the qualification record and issue #2 for final acceptance and publication status.
+Electron and Deep Agents TypeScript development pilot. M1-02 OpenRouter setup and durable General Chat are accepted. The current M1-03 working candidate adds task allowances, approval and two-task queueing; practical checks and regression coverage pass, with publication and hosted PR checks still outstanding. See the milestone plan and issue #3 for evidence and live delivery status.
 
 ## Product and delivery planning
 
@@ -41,7 +41,7 @@ npm run build
 npm run format:check
 ```
 
-`dev:*` commands build once before launching. Start the service first, then launch the desktop with the **same** `HARNESS_SERVICE_TOKEN`. The desktop presents setup if no key/defaults are saved. Installers, signing and automatic service supervision are later slices. Current chat has no shell/search/document tools, queue, Stop/Resume or product spending allowance. Closing the desktop is not yet a supported background-run workflow. No credentials are needed for builds/typechecks.
+`dev:*` commands build once before launching. Start the service first, then launch the desktop with the **same** `HARNESS_SERVICE_TOKEN`. The desktop presents setup if no key/defaults are saved. Installers, signing and automatic service supervision are later slices. Current chat has no shell/search/document tools or Stop/Resume. Each instruction requires an allowance; an insufficient allowance prompts for approval before dispatch. Closing the desktop is not yet a supported background-run workflow. No credentials are needed for builds/typechecks.
 
 ## Independent service qualification
 
@@ -57,11 +57,13 @@ Before starting, provide:
 
 Agent-operated practical checks require the owner's testing-mode decision. Nothing in this section authorises a test launch or credential access.
 
-The service owns three SQLite files: `owner.sqlite` holds an exclusive service-ownership lock; `metadata.sqlite` stores settings and thread/run metadata; `checkpoints.sqlite` belongs to the maintained framework saver. Existing chats retain their selected model when defaults change. Startup marks unfinished runs interrupted without dispatching them. Full interruption recovery and Resume remain later work.
+The service owns three SQLite files: `owner.sqlite` holds an exclusive service-ownership lock; `metadata.sqlite` stores settings, thread/run metadata and task/allowance/decision records; `checkpoints.sqlite` belongs to the maintained framework saver. Existing chats retain their selected model when defaults change. Startup marks unfinished runs interrupted without dispatching them. Full interruption recovery and Resume remain later work.
 
-Authenticated setup, catalogue/defaults, new-chat/search/history and one thread-stream route are available. Clients cannot override model, context, system input, graph configuration, checkpoints or tools. Other execution/protocol/state-write/delete routes are denied. Only the packaged `harness://app` origin is trusted, and it still requires the bearer token. Same-thread admission stays held until stream outcome and durable finalisation; this is not the later two-task queue.
+Authenticated setup, catalogue/defaults, new-chat/search/history, task submission/increase decisions/accounting refresh and one thread-stream route are available. Clients cannot override model, context, system input, graph configuration, checkpoints or tools. Other execution/protocol/state-write/delete routes are denied. Only the packaged `harness://app` origin is trusted, and it still requires the bearer token. Tasks reserve allowance before dispatch; at most two run concurrently and additional tasks queue FIFO. A chat with unresolved work cannot admit another task. Waiting approvals release capacity; approval rejoins the queue. Unattached queued submissions expire to interrupted after 30 seconds when subsequent request/queue activity checks them. Attached waiting streams are excluded.
 
-Credential access belongs to the service and occurs on model dispatch. Tracing and automatic model retries are disabled. Pilot calls have 512 output tokens and a 90-second stream deadline; these are not a monetary spending guarantee. The UI displays the immutable requested model and returned model identity when available. The pinned provider integration omits response model identity on its current streaming path, which the UI discloses explicitly.
+Provider credential access belongs to the service for setup, model dispatch and explicit charge reconciliation. Tracing and automatic model retries are disabled. Pilot calls have 512 output tokens and a 90-second stream deadline; these are not a monetary spending guarantee. The UI displays the immutable requested model and returned model identity when available. The pinned provider integration omits response model identity on its current streaming path, which the UI discloses explicitly.
+
+M1-03 adds verified live allowance approval, delayed confirmed accounting, remembered follow-up and two-active/third-queued admission. Missing charges remain uncertain with reservations held; accounting refresh never generates a reply. Reservations use conservative prices and context limits, not a guaranteed provider billing cap. Full background/rejoin/Resume is deferred. See the [M1-03 evidence](docs/planning/milestone-1.md#m1-03-practical-qualification--27-october-2026).
 
 Live Electron setup, streamed reply, full owned desktop/service restart and remembered follow-up passed with the approved DeepSeek model. Failure scenarios and subsequent regressions are recorded separately in the [M1-02 evidence](docs/planning/m1-02-qualification.md). This is developer execution, not installer or full background-lifecycle acceptance.
 
