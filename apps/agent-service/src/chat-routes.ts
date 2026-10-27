@@ -1,3 +1,4 @@
+import type { ExecutionControl } from "./execution-control.js";
 import { BytesLineDecoder, SSEDecoder } from "@langchain/langgraph-sdk/utils";
 import { setTimeout as delay } from "node:timers/promises";
 import { quoteModel, generationCost, type Quote } from "./accounting.js";
@@ -13,6 +14,7 @@ export function chatRoutes(
   metadata: MetadataStore,
   tasks: TaskLedger,
   streams = new Set<string>(),
+  execution?: ExecutionControl,
 ) {
   const app = new Hono();
   app.post("/threads", async (c) => {
@@ -89,7 +91,8 @@ export function chatRoutes(
         const all = tasks.list();
         if (
           all.find((t) => t.state === "queued")?.id !== taskId ||
-          all.filter((t) => t.state === "running").length >= 2
+          all.filter((t) => ["running", "stopping"].includes(t.state)).length >=
+            2
         ) {
           await delay(200, undefined, { signal: queueSignal });
           continue;
@@ -134,16 +137,21 @@ export function chatRoutes(
         409,
       );
     }
+    let graphDispatched = false;
     const finish = async (succeeded: boolean) => {
       try {
+        if (graphDispatched) await execution?.drained(admissionId);
         const current = tasks.get(taskId);
-        if (current.state !== "running") return;
+        if (!["running", "stopping"].includes(current.state)) return;
         // Release execution capacity even when the provider has not published billing yet.
         const waiting = tasks.settle(
           taskId,
           admissionId,
           current.revision,
-          null,
+          !graphDispatched ||
+            (current.provider_attempts > 0 && current.reserved === 0)
+            ? 0
+            : null,
           succeeded,
         );
         if (waiting.generation_id) {
@@ -154,14 +162,17 @@ export function chatRoutes(
         }
       } finally {
         streams.delete(taskId);
+        execution?.release(admissionId);
       }
     };
     const controller = new AbortController();
+    execution?.register(admissionId, controller);
     const signal = AbortSignal.any([
       c.req.raw.signal,
       controller.signal,
       AbortSignal.timeout(90000),
     ]);
+    signal.addEventListener("abort", () => controller.abort(), { once: true });
     try {
       await metadata.set(thread.thread_id, {
         kind: "patch",
@@ -170,6 +181,7 @@ export function chatRoutes(
           admission_id: admissionId,
         },
       });
+      graphDispatched = true;
       const response = await framework.fetch(
         new Request(c.req.url, {
           method: "POST",
@@ -188,11 +200,16 @@ export function chatRoutes(
               runLimit: 1,
               exitBehavior: "error",
             },
-            config: { recursion_limit: 8 },
+            config: {
+              recursion_limit: 8,
+              tags: [`task-execution:${admissionId}`],
+            },
           }),
         }),
       );
       if (!response.ok || !response.body) {
+        // Embedded validation/not-found responses precede graph execution.
+        if ([400, 404, 422].includes(response.status)) graphDispatched = false;
         metadata.finishRun(admissionId, "error");
         await finish(false);
         return c.json({ error: "Chat could not start" }, 502);

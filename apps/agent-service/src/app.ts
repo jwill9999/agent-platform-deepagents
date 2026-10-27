@@ -7,6 +7,7 @@ import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
+import { ExecutionControl } from "./execution-control.js";
 import type { openPersistence } from "./persistence.js";
 
 export function createServiceApp(options: {
@@ -14,6 +15,7 @@ export function createServiceApp(options: {
   persistence: ReturnType<typeof openPersistence>;
   token: string;
   connected?: boolean;
+  execution?: ExecutionControl;
 }) {
   if (!/^[A-Za-z0-9_-]{32,}$/.test(options.token))
     throw new Error(
@@ -25,8 +27,15 @@ export function createServiceApp(options: {
       ? error.getResponse()
       : c.json({ error: "Service request failed" }, 500),
   );
+  const execution =
+    options.execution ?? new ExecutionControl(options.persistence.tasks);
   const framework = createEmbedServer({
-    graph: options.graph,
+    graph: Object.fromEntries(
+      Object.entries(options.graph).map(([name, graph]) => [
+        name,
+        graph.withConfig({ callbacks: [execution.callbacks] }),
+      ]),
+    ),
     threads: options.persistence.metadata,
     checkpointer: options.persistence.checkpointer,
   });
@@ -62,7 +71,11 @@ export function createServiceApp(options: {
     app.route("/", setupRoutes(options.persistence.metadata));
     app.route(
       "/",
-      taskRoutes(options.persistence.tasks, options.persistence.metadata),
+      taskRoutes(
+        options.persistence.tasks,
+        options.persistence.metadata,
+        execution,
+      ),
     );
     app.route(
       "/",
@@ -71,6 +84,7 @@ export function createServiceApp(options: {
         options.persistence.metadata,
         options.persistence.tasks,
         attachedStreams,
+        execution,
       ),
     );
   }

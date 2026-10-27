@@ -8,6 +8,7 @@ export const unfinished = (task: Task) =>
   [
     "queued",
     "running",
+    "stopping",
     "awaiting_approval",
     "uncertain",
     "interrupted",
@@ -16,6 +17,8 @@ export const unfinished = (task: Task) =>
 const titles: Record<Task["state"], string> = {
   queued: "Your task is queued",
   running: "Task running",
+  stopping: "Stopping requested",
+  stopped: "Stopped",
   awaiting_approval: "Approve an allowance increase",
   completed: "Reply and charge saved",
   failed: "Task failed",
@@ -65,6 +68,25 @@ export function TaskPanel({
       setBusy(false);
     }
   }
+  async function stop() {
+    setBusy(true);
+    setError("");
+    try {
+      await api.request(`/tasks/${task.id}/stop`, "POST", {
+        attemptId: task.attempt_id,
+        revision: task.revision,
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      try {
+        await refresh();
+      } catch {
+        setError("Could not confirm Stop. Refresh the task status.");
+      }
+      setBusy(false);
+    }
+  }
   async function accounting() {
     setBusy(true);
     setError("");
@@ -81,7 +103,49 @@ export function TaskPanel({
   }
   return (
     <section className="task-panel" aria-label="Task allowance">
-      <h2>{titles[task.state]}</h2>
+      <h2>
+        {task.retry_waiting
+          ? "Brief connection failure · retry waiting"
+          : titles[task.state]}
+      </h2>
+      {task.state === "running" && (
+        <>
+          <p>
+            {task.retry_waiting
+              ? `Retry ${task.provider_attempts} of 2. Same task, model and allowance.`
+              : "Your reply is running. Stop requests cancellation of this task only."}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={() => void stop()}
+          >
+            Stop task
+          </Button>
+        </>
+      )}
+      {task.state === "stopping" && (
+        <>
+          <p>
+            Waiting for local execution to end. No new attempt will start.
+            Provider charges may still arrive.
+          </p>
+          <Button disabled>Stopping…</Button>
+        </>
+      )}
+      {task.state === "stopped" && (
+        <p>
+          Local execution has ended. Nothing restarts automatically. Any
+          retained partial reply is incomplete; provider billing may still be
+          pending.
+        </p>
+      )}
+      {task.provider_attempts > 0 && (
+        <p className="footnote">
+          Provider attempts: {task.provider_attempts} of at most 3
+        </p>
+      )}
       {task.state === "queued" && (
         <p>
           No model request yet. This task starts once when capacity is
@@ -113,8 +177,9 @@ export function TaskPanel({
       )}
       {task.state === "failed" && (
         <p>
-          Pricing, admission or execution failed. No automatic resend or model
-          switch was made.
+          Pricing, admission or execution failed. No further attempts will
+          start. Any bounded retries used this task’s original allowance and
+          model.
         </p>
       )}
       <p className="task-amounts">
@@ -167,7 +232,7 @@ export function TaskPanel({
           </div>
         </form>
       )}
-      {["uncertain", "interrupted"].includes(task.state) &&
+      {["uncertain", "interrupted", "stopped"].includes(task.state) &&
         task.generation_id &&
         !task.attempt_settled && (
           <Button

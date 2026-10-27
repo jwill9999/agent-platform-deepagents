@@ -58,6 +58,8 @@ export type Task = {
   state:
     | "queued"
     | "running"
+    | "stopping"
+    | "stopped"
     | "awaiting_approval"
     | "completed"
     | "failed"
@@ -72,6 +74,10 @@ export type Task = {
   decision_id: string | null;
   generation_id: string | null;
   attempt_settled: number;
+  attempt_id: string | null;
+  partial_text: string;
+  provider_attempts: number;
+  retry_waiting: number;
   execution_outcome: "success" | "error" | null;
 };
 export function textContent(content: unknown): string {

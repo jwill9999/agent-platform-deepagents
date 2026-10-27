@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { createServiceApp } from "./app.js";
 import { openPersistence } from "./persistence.js";
+import { ExecutionControl } from "./execution-control.js";
 
 // Set before dynamically loading the provider graph. No tracing is opted into.
 process.env.LANGSMITH_TRACING = "false";
@@ -15,15 +16,17 @@ async function main() {
   const persistence = openPersistence(directory);
   try {
     const { createServiceAgent } = await import("@harness/agent");
+    const execution = new ExecutionControl(persistence.tasks);
     const agent = await createServiceAgent((id) => {
       if (persistence.metadata.getRun(id)?.status === "running")
         persistence.metadata.finishRun(id, "error");
-    });
+    }, execution);
     const app = createServiceApp({
       graph: { "general-chat": agent.graph },
       persistence,
       token,
       connected: true,
+      execution,
     });
     const server = serve({
       fetch: app.fetch,

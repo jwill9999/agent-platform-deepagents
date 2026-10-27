@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 export type TaskState =
   | "queued"
   | "running"
+  | "stopping"
+  | "stopped"
   | "awaiting_approval"
   | "completed"
   | "failed"
@@ -31,6 +33,9 @@ export type TaskRecord = {
   generation_id: string | null;
   execution_outcome: "success" | "error" | null;
   lookup_after: number;
+  partial_text: string;
+  provider_attempts: number;
+  retry_waiting: number;
 };
 
 function money(value: number): void {
@@ -79,6 +84,146 @@ export class TaskLedger {
         allowance INTEGER NOT NULL
       );
     `);
+    this.upgradeExecutionSchema();
+  }
+
+  /** Upgrade our policy table only; graph checkpoint storage is untouched. */
+  private upgradeExecutionSchema(): void {
+    const sql = (
+      this.db
+        .prepare("SELECT sql FROM sqlite_master WHERE name='tasks'")
+        .get() as { sql: string }
+    ).sql;
+    if (!sql.includes("'stopping'")) {
+      this.db.pragma("foreign_keys = OFF");
+      try {
+        this.db
+          .transaction(() => {
+            this.db.exec(
+              sql
+                .replace(/CREATE TABLE tasks/i, "CREATE TABLE tasks_m104")
+                .replace(
+                  "'denied','uncertain','interrupted'",
+                  "'denied','uncertain','interrupted','stopping','stopped'",
+                ),
+            );
+            this.db.exec(
+              "INSERT INTO tasks_m104 SELECT * FROM tasks; DROP TABLE tasks; ALTER TABLE tasks_m104 RENAME TO tasks;",
+            );
+          })
+          .immediate();
+      } finally {
+        this.db.pragma("foreign_keys = ON");
+      }
+    }
+    const columns = this.db.pragma("table_info(tasks)") as { name: string }[];
+    for (const [name, definition] of [
+      ["partial_text", "TEXT NOT NULL DEFAULT ''"],
+      ["provider_attempts", "INTEGER NOT NULL DEFAULT 0"],
+      ["retry_waiting", "INTEGER NOT NULL DEFAULT 0"],
+    ]) {
+      if (!columns.some((c) => c.name === name))
+        this.db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`);
+    }
+    this.db
+      .exec(`CREATE UNIQUE INDEX IF NOT EXISTS one_open_task_per_thread ON tasks(thread_id)
+      WHERE state IN ('queued','running','stopping','awaiting_approval','uncertain','interrupted');
+      CREATE TABLE IF NOT EXISTS provider_attempts (
+        run_id TEXT NOT NULL, ordinal INTEGER NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id),
+        reservation INTEGER NOT NULL, outcome TEXT NOT NULL, generation_id TEXT, confirmed_cost INTEGER,
+        PRIMARY KEY(run_id,ordinal)
+      );`);
+    if ((this.db.pragma("foreign_key_check") as unknown[]).length)
+      throw new Error("Policy migration integrity failure");
+  }
+
+  forRun(run: string): TaskRecord {
+    const row = this.db
+      .prepare("SELECT * FROM tasks WHERE attempt_id=?")
+      .get(run);
+    if (!row) throw new Error("Execution not admitted");
+    return row as TaskRecord;
+  }
+
+  beginProviderAttempt(run: string): void {
+    this.db
+      .transaction(() => {
+        const t = this.forRun(run);
+        if (
+          t.state !== "running" ||
+          t.provider_attempts >= 3 ||
+          t.generation_id ||
+          t.partial_text
+        )
+          throw new Error("Dispatch not permitted");
+        // The first reservation is made by admission. Only positively uncharged
+        // connection failures release it; retries reserve again before dispatch.
+        const reservation = t.provider_attempts === 0 ? t.reserved : t.estimate;
+        if (t.provider_attempts > 0 && t.reserved !== 0)
+          throw new Error("Uncertain previous attempt");
+        if (reservation > t.allowance - t.confirmed)
+          throw new Error("Allowance exhausted");
+        this.db
+          .prepare("INSERT INTO provider_attempts VALUES (?,?,?,?,?,NULL,NULL)")
+          .run(run, t.provider_attempts + 1, t.id, reservation, "dispatched");
+        this.db
+          .prepare(
+            "UPDATE tasks SET provider_attempts=provider_attempts+1,reserved=?,retry_waiting=0 WHERE id=?",
+          )
+          .run(reservation, t.id);
+      })
+      .immediate();
+  }
+
+  rejectBeforeDispatch(run: string): boolean {
+    return this.db
+      .transaction(() => {
+        const t = this.forRun(run);
+        if (
+          t.state !== "running" ||
+          t.generation_id ||
+          t.partial_text ||
+          !t.provider_attempts
+        )
+          return false;
+        const changed = this.db
+          .prepare(
+            "UPDATE provider_attempts SET outcome='not_sent',confirmed_cost=0 WHERE run_id=? AND ordinal=? AND outcome='dispatched'",
+          )
+          .run(run, t.provider_attempts);
+        if (changed.changes !== 1) return false;
+        this.db
+          .prepare("UPDATE tasks SET reserved=0,retry_waiting=? WHERE id=?")
+          .run(Number(t.provider_attempts < 3), t.id);
+        return t.provider_attempts < 3;
+      })
+      .immediate();
+  }
+
+  requestStop(id: string, run: string, revision: number): TaskRecord {
+    return this.db
+      .transaction(() => {
+        const t = this.get(id);
+        if (t.attempt_id !== run) throw new Error("Stale Stop identity");
+        if (["stopping", "stopped"].includes(t.state)) return t;
+        if (t.revision !== revision || t.state !== "running")
+          throw new Error("Task already changed");
+        this.db
+          .prepare(
+            "UPDATE tasks SET state='stopping',retry_waiting=0,revision=revision+1 WHERE id=?",
+          )
+          .run(id);
+        return this.get(id);
+      })
+      .immediate();
+  }
+
+  recordPartial(id: string, run: string, text: string): void {
+    this.db
+      .prepare(
+        "UPDATE tasks SET partial_text=? WHERE id=? AND attempt_id=? AND state IN ('running','stopping')",
+      )
+      .run(text.slice(0, 32768), id, run);
   }
 
   get(id: string): TaskRecord {
@@ -164,7 +309,7 @@ export class TaskLedger {
         const active = (
           this.db
             .prepare(
-              "SELECT COUNT(*) AS value FROM tasks WHERE state = 'running'",
+              "SELECT COUNT(*) AS value FROM tasks WHERE state IN ('running','stopping')",
             )
             .get() as { value: number }
         ).value;
@@ -265,7 +410,7 @@ export class TaskLedger {
       .transaction(() => {
         const task = this.get(id);
         if (
-          task.state !== "running" ||
+          !["running", "stopping"].includes(task.state) ||
           task.revision !== revision ||
           task.attempt_id !== attemptId ||
           task.attempt_settled
@@ -275,15 +420,31 @@ export class TaskLedger {
         money(confirmed);
         this.db
           .prepare(
-            "UPDATE tasks SET state=?,confirmed=?,reserved=?,attempt_settled=?,execution_outcome=?,revision=revision+1 WHERE id=?",
+            "UPDATE tasks SET state=?,confirmed=?,reserved=?,attempt_settled=?,execution_outcome=?,retry_waiting=0,revision=revision+1 WHERE id=?",
           )
           .run(
-            cost === null ? "uncertain" : succeeded ? "completed" : "failed",
+            task.state === "stopping"
+              ? "stopped"
+              : cost === null
+                ? "uncertain"
+                : succeeded
+                  ? "completed"
+                  : "failed",
             confirmed,
             cost === null ? task.reserved : 0,
             Number(cost !== null),
             succeeded ? "success" : "error",
             id,
+          );
+        this.db
+          .prepare(
+            "UPDATE provider_attempts SET outcome=?,confirmed_cost=? WHERE run_id=? AND ordinal=? AND outcome='dispatched'",
+          )
+          .run(
+            cost === null ? "uncertain" : "settled",
+            cost,
+            attemptId,
+            task.provider_attempts,
           );
         return this.get(id);
       })
@@ -302,7 +463,7 @@ export class TaskLedger {
       .transaction(() => {
         const task = this.get(id);
         if (
-          !["uncertain", "interrupted"].includes(task.state) ||
+          !["uncertain", "interrupted", "stopped"].includes(task.state) ||
           task.revision !== revision ||
           !task.attempt_id ||
           task.attempt_id !== attemptId ||
@@ -316,14 +477,21 @@ export class TaskLedger {
             "UPDATE tasks SET state=?,confirmed=?,reserved=0,attempt_settled=1,revision=revision+1 WHERE id=?",
           )
           .run(
-            task.execution_outcome === "success"
-              ? "completed"
-              : task.execution_outcome === "error"
-                ? "failed"
-                : "interrupted",
+            task.state === "stopped"
+              ? "stopped"
+              : task.execution_outcome === "success"
+                ? "completed"
+                : task.execution_outcome === "error"
+                  ? "failed"
+                  : "interrupted",
             confirmed,
             id,
           );
+        this.db
+          .prepare(
+            "UPDATE provider_attempts SET outcome='settled',confirmed_cost=? WHERE run_id=? AND ordinal=? AND outcome='uncertain'",
+          )
+          .run(cost, attemptId, task.provider_attempts);
         return this.get(id);
       })
       .immediate();
@@ -333,10 +501,15 @@ export class TaskLedger {
     if (!/^gen-[A-Za-z0-9_-]+$/.test(generationId)) return;
     const changed = this.db
       .prepare(
-        "UPDATE tasks SET generation_id=? WHERE id=? AND attempt_id=? AND state='running' AND (generation_id IS NULL OR generation_id=?)",
+        "UPDATE tasks SET generation_id=? WHERE id=? AND attempt_id=? AND state IN ('running','stopping') AND (generation_id IS NULL OR generation_id=?)",
       )
       .run(generationId, id, attemptId, generationId);
     if (changed.changes !== 1) throw new Error("Generation identity conflict");
+    this.db
+      .prepare(
+        "UPDATE provider_attempts SET generation_id=? WHERE run_id=? AND ordinal=(SELECT provider_attempts FROM tasks WHERE id=?)",
+      )
+      .run(generationId, attemptId, id);
   }
 
   /** Bound metadata polling independently of generation admission. */
@@ -345,7 +518,7 @@ export class TaskLedger {
       .transaction(() => {
         const task = this.get(id);
         if (
-          !["uncertain", "interrupted"].includes(task.state) ||
+          !["uncertain", "interrupted", "stopped"].includes(task.state) ||
           task.revision !== revision ||
           !task.generation_id ||
           task.attempt_settled ||
@@ -396,7 +569,7 @@ export class TaskLedger {
   interruptOnRestart(): void {
     this.db
       .prepare(
-        "UPDATE tasks SET state='interrupted',revision=revision+1 WHERE state IN ('running','queued')",
+        "UPDATE tasks SET state='interrupted',revision=revision+1 WHERE state IN ('running','stopping','queued')",
       )
       .run();
   }

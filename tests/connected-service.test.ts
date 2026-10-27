@@ -1,3 +1,4 @@
+import { ExecutionControl } from "../apps/agent-service/src/execution-control.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createServiceApp } from "../apps/agent-service/src/app.js";
@@ -54,14 +55,17 @@ beforeEach(async () => {
   vi.stubEnv("LANGSMITH_TRACING_V2", "false");
   fixture = privateFixture();
   persistence = openPersistence(fixture.path);
-  const agent = await createServiceAgent((id) =>
-    persistence.metadata.finishRun(id, "error"),
+  const execution = new ExecutionControl(persistence.tasks);
+  const agent = await createServiceAgent(
+    (id) => persistence.metadata.finishRun(id, "error"),
+    execution,
   );
   app = createServiceApp({
     graph: { "general-chat": agent.graph },
     persistence,
     token: "synthetic-connected-test-token-long-enough",
     connected: true,
+    execution,
   });
   vi.stubGlobal(
     "fetch",
@@ -303,9 +307,11 @@ test("admission storage failures return generic errors and release the unfinishe
   const result = await run(thread.thread_id);
   expect(result.status).toBe(502);
   expect(await result.text()).not.toContain("private storage detail");
-  // Unknown charge blocks that task, without blocking another chat.
+  // No graph was dispatched, so the failed task has no reservation.
   vi.mocked(fetch).mockRejectedValue(new Error("synthetic"));
-  expect((await run(thread.thread_id)).status).toBe(409);
+  expect(
+    persistence.tasks.list().findLast((t) => t.thread_id === thread.thread_id),
+  ).toMatchObject({ state: "failed", reserved: 0 });
   const separate = await newChat();
   const next = await run(separate.thread_id);
   expect(next.status).toBe(200);
@@ -390,4 +396,52 @@ test("service factory standalone configuration preserves no-fallback policy", as
       },
     ),
   ).rejects.toThrow("model could not complete");
+});
+
+test("native retry configuration recognises wrapped preconnection failures and records each attempt under one allowance", async () => {
+  const thread = await newChat();
+  let attempts = 0;
+  vi.mocked(fetch).mockImplementation(async (_url, init) => {
+    attempts++;
+    if (attempts < 3)
+      throw Object.assign(new Error("synthetic refused connection"), {
+        code: "ECONNREFUSED",
+      });
+    const body = JSON.parse(String(init?.body));
+    expect(body.model).toBe("test/general");
+    expect(body.provider.allow_fallbacks).toBe(false);
+    expect(body.max_tokens).toBe(512);
+    return new Response(
+      "data: " +
+        JSON.stringify({
+          id: "gen-retry-regression",
+          model: body.model,
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant", content: "Recovered" },
+              finish_reason: null,
+            },
+          ],
+        }) +
+        "\n\ndata: " +
+        JSON.stringify({
+          id: "gen-retry-regression",
+          model: body.model,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        }) +
+        "\n\ndata: [DONE]\n\n",
+      { headers: { "Content-Type": "text/event-stream" } },
+    );
+  });
+  const response = await run(thread.thread_id);
+  expect(await response.text()).toContain("Recovered");
+  expect(attempts).toBe(3);
+  expect(persistence.tasks.list().at(-1)).toMatchObject({
+    state: "completed",
+    provider_attempts: 3,
+    allowance: 1000,
+    reserved: 0,
+    partial_text: "Recovered",
+  });
 });
