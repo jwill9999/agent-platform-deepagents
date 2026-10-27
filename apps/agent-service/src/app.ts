@@ -2,6 +2,7 @@ import { createEmbedServer } from "@langchain/langgraph-api/experimental/embed";
 import { cors } from "hono/cors";
 import { setupRoutes } from "./setup.js";
 import { chatRoutes } from "./chat-routes.js";
+import { activityRoutes } from "./activity.js";
 import { taskRoutes } from "./task-routes.js";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
@@ -69,6 +70,7 @@ export function createServiceApp(options: {
       await next();
     });
     app.route("/", setupRoutes(options.persistence.metadata));
+    app.route("/", activityRoutes(options.persistence.activity));
     app.route(
       "/",
       taskRoutes(
